@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DrawLink</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="stylesheet" href="/css/canvas.css">
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     ADMIN PANEL (방장 전용, 오른쪽 슬라이드)
+══════════════════════════════════════════════════════════════════════ -->
+<div id="admin-panel" class="admin-panel closed">
+  <div class="admin-panel-header">
+    <h3>⚙️ 관리 패널</h3>
+    <button id="admin-close" class="admin-close">×</button>
+  </div>
+
+  <!-- 로비 설정 -->
+  <div id="admin-lobby-settings" class="admin-section">
+    <h4>⏱ 시간 설정</h4>
+    <div class="admin-row">
+      <label>제시어 (초)</label>
+      <input type="number" id="admin-write-time" value="30" min="10" max="300">
+    </div>
+    <div class="admin-row">
+      <label>그림 그리기 (초)</label>
+      <input type="number" id="admin-draw-time" value="80" min="15" max="600">
+    </div>
+    <div class="admin-row">
+      <label>유추 (초)</label>
+      <input type="number" id="admin-guess-time" value="45" min="10" max="300">
+    </div>
+    <h4 style="margin-top:12px">🔄 교환 설정</h4>
+    <div class="admin-row">
+      <label>그림+추리 교환 횟수</label>
+      <input type="number" id="admin-exchange-count" value="0" min="0" max="7" placeholder="자동">
+    </div>
+    <p style="font-size:11px;color:var(--muted);margin-top:4px">
+      0 = 자동 (플레이어 수에 맞게)<br>
+      1 = 그림1번+추리1번, 2 = 그림2번+추리2번…
+    </p>
+    <button class="admin-btn full" id="admin-quick-mode" style="margin-top:10px">⚡ 빠른 모드 (15s/40s/20s)</button>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">게임 시작 버튼을 누를 때 적용됩니다</p>
+  </div>
+
+  <!-- 게임 중 제어 -->
+  <div id="admin-game-controls" class="admin-section" style="display:none">
+    <h4>⏱ 타이머</h4>
+    <div id="admin-timer-display" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+    <div class="admin-btn-row">
+      <button class="admin-btn" id="admin-add-10">+10초</button>
+      <button class="admin-btn" id="admin-add-30">+30초</button>
+      <button class="admin-btn" id="admin-add-60">+1분</button>
+    </div>
+    <h4 style="margin-top:12px">⚙️ 게임 제어</h4>
+    <div class="admin-btn-row" style="flex-direction:column;gap:6px">
+      <button class="admin-btn full" id="admin-pause-btn">⏸ 일시정지</button>
+      <button class="admin-btn full danger" id="admin-force-next">⏭ 강제 다음 단계</button>
+      <button class="admin-btn full danger" id="admin-end-game">🏁 지금 결과 공개</button>
+    </div>
+    <h4 style="margin-top:12px">📢 전체 공지</h4>
+    <div style="display:flex;gap:6px">
+      <input type="text" id="admin-announce-input" placeholder="공지 내용 입력" maxlength="100"
+             style="font-size:12px;padding:6px 10px">
+      <button class="admin-btn" id="admin-announce-btn" style="white-space:nowrap;flex-shrink:0">전송</button>
+    </div>
+  </div>
+
+  <!-- 결과 제어 -->
+  <div id="admin-reveal-controls" class="admin-section" style="display:none">
+    <h4>🎬 결과 진행</h4>
+    <div class="admin-btn-row" style="flex-direction:column;gap:6px">
+      <button class="admin-btn full" id="admin-reveal-next-entry">다음 항목 →</button>
+      <button class="admin-btn full" id="admin-reveal-next-chain">다음 이야기 →</button>
+    </div>
+  </div>
+
+  <!-- 플레이어 관리 -->
+  <div class="admin-section">
+    <h4>플레이어 관리</h4>
+    <div id="admin-player-list"></div>
+  </div>
+</div>
+
+<!-- 관리 패널 토글 버튼 -->
+<button id="admin-toggle" class="admin-toggle" style="display:none" title="관리 패널">⚙️</button>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     GLOBAL HEADER
+══════════════════════════════════════════════════════════════════════ -->
+<header class="game-header">
+  <div class="logo">Draw<span>Link</span></div>
+  <div style="font-size:12px;color:var(--muted);font-weight:600" id="round-indicator" style="display:none"></div>
+  <div class="header-right">
+    <div class="room-code-badge">------</div>
+    <button class="mute-btn" id="mute-btn" title="효과음">🔊</button>
+  </div>
+</header>
+
+<!-- 일시정지 배너 -->
+<div id="pause-banner" style="display:none;position:fixed;top:52px;left:0;right:0;z-index:190;
+     background:var(--primary);color:#fff;text-align:center;padding:10px;font-weight:700;font-size:14px">
+  ⏸ 일시정지 중 — 방장이 재개할 때까지 기다려주세요
+</div>
+
+<!-- 공지 오버레이 -->
+<div id="announcement-overlay" style="display:none;position:fixed;inset:0;z-index:400;
+     background:rgba(43,58,66,0.75);align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:16px;padding:32px 40px;max-width:400px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.25)">
+    <div style="font-size:28px;margin-bottom:12px">📢</div>
+    <div style="font-size:18px;font-weight:700;color:var(--text)" id="announcement-text"></div>
+    <button id="announcement-close" class="btn btn-ghost btn-sm" style="margin-top:20px">닫기</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Create
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-create">
+  <div class="center-wrap">
+    <div class="card">
+      <h2>새 방 만들기</h2>
+      <p>닉네임을 입력하고 방을 만드세요</p>
+      <form id="create-form" class="form-stack">
+        <input type="text" id="create-nickname" placeholder="닉네임 (최대 12자)" maxlength="12" autocomplete="off" required>
+        <button type="submit" class="btn btn-primary btn-lg btn-full">방 만들기 🚀</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Join
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-join">
+  <div class="center-wrap">
+    <div class="card">
+      <h2>방 참여하기</h2>
+      <p>닉네임과 방 코드를 입력하세요</p>
+      <form id="join-form" class="form-stack">
+        <input type="text" id="join-nickname" placeholder="닉네임 (최대 12자)" maxlength="12" autocomplete="off" required>
+        <input type="text" id="join-room-code" placeholder="방 코드 (6자리)" maxlength="6" autocomplete="off"
+               style="text-transform:uppercase;letter-spacing:4px;font-weight:700;text-align:center">
+        <button type="submit" class="btn btn-primary btn-lg btn-full">참여하기</button>
+        <p class="error-msg" id="join-error"></p>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Lobby
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-lobby">
+  <div class="lobby-layout">
+
+    <!-- Main area -->
+    <div class="lobby-main">
+
+      <!-- Room code display -->
+      <div class="code-display" style="max-width:600px;width:100%">
+        <div>
+          <div class="code-label">방 코드</div>
+          <div class="code-big" id="lobby-code">------</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="copy-code-btn">링크 복사</button>
+      </div>
+
+      <!-- Players -->
+      <div style="width:100%;max-width:600px">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
+          플레이어 <span id="player-count">0</span>명 · 최소 2명, 최대 8명
+        </div>
+        <div class="player-grid" id="player-grid"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="lobby-actions">
+        <button class="btn btn-ghost" id="ready-btn" data-ready="false">준비 완료!</button>
+        <button class="btn btn-primary btn-lg" id="start-btn" style="display:none">게임 시작 🎮</button>
+      </div>
+
+      <p style="font-size:12px;color:var(--muted);text-align:center">
+        모든 플레이어가 준비되면 방장이 게임을 시작할 수 있어요
+      </p>
+    </div>
+
+    <!-- Chat sidebar -->
+    <div class="chat-panel">
+      <div class="chat-header">💬 채팅</div>
+      <div class="chat-messages" id="lobby-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="lobby-chat-input" placeholder="메시지 입력…" maxlength="200" autocomplete="off">
+        <button class="chat-send" id="lobby-chat-send">↑</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Writing
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-writing">
+  <div class="phase-wrap">
+    <div class="phase-badge">라운드 시작</div>
+    <h2 class="phase-title">제시어를 입력하세요</h2>
+    <p class="phase-subtitle">다음 사람이 이 단어를 보고 그림을 그려요</p>
+
+    <div class="timer-wrap">
+      <div class="timer-label" id="writing-timer-label">30초</div>
+      <div class="timer-bar"><div class="timer-fill" id="writing-timer-fill" style="width:100%"></div></div>
+    </div>
+
+    <textarea id="writing-input" placeholder="예: 우주에서 라면 먹는 고양이"
+              maxlength="40" rows="3"
+              style="resize:none;font-size:18px;font-weight:700;text-align:center"></textarea>
+    <div class="char-count" id="writing-charcount">0 / 40</div>
+    <button class="btn btn-primary btn-full btn-lg" id="writing-submit" disabled>제출하기 →</button>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Drawing
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-drawing">
+  <div class="drawing-wrap">
+
+    <div class="drawing-prompt-bar">
+      <span class="dp-label">그림으로 표현하세요</span>
+      <span class="dp-word" id="draw-prompt-word">…</span>
+    </div>
+
+    <div class="timer-wrap">
+      <div class="timer-label" id="drawing-timer-label">80초</div>
+      <div class="timer-bar"><div class="timer-fill" id="drawing-timer-fill" style="width:100%"></div></div>
+    </div>
+
+    <div class="toolbar" id="toolbar"></div>
+
+    <div class="canvas-container">
+      <canvas class="draw-canvas" id="draw-canvas"></canvas>
+    </div>
+
+    <button class="btn btn-primary btn-full btn-lg" id="draw-submit" disabled>그림 제출하기 →</button>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Guessing
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-guessing">
+  <div class="phase-wrap">
+    <div class="phase-badge">그림 보고 유추하기</div>
+    <h2 class="phase-title">이 그림은 무엇일까요?</h2>
+
+    <div class="timer-wrap">
+      <div class="timer-label" id="guessing-timer-label">45초</div>
+      <div class="timer-bar"><div class="timer-fill" id="guessing-timer-fill" style="width:100%"></div></div>
+    </div>
+
+    <div id="guess-image-wrap"
+         style="width:100%;border-radius:var(--radius-sm);overflow:hidden;background:#fff;border:1px solid var(--border)"></div>
+
+    <input type="text" id="guess-input" placeholder="유추한 단어 입력" maxlength="40" autocomplete="off">
+    <div class="char-count" id="guess-charcount">0 / 40</div>
+    <button class="btn btn-primary btn-full btn-lg" id="guess-submit" disabled>제출하기 →</button>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Waiting
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-waiting">
+  <div class="waiting-wrap">
+    <div class="spinner"></div>
+    <h3 style="font-size:18px;font-weight:700">다른 플레이어를 기다리는 중…</h3>
+    <p class="submitted-count" id="submitted-count"></p>
+    <div class="edit-btn-wrap">
+      <button class="btn btn-ghost btn-sm" id="edit-btn">✏️ 편집하기</button>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════════
+     SCREEN: Reveal
+══════════════════════════════════════════════════════════════════════ -->
+<section class="screen" id="screen-reveal">
+  <div class="reveal-layout">
+
+    <!-- Main reveal area -->
+    <div class="reveal-main">
+      <div class="reveal-header">
+        <h2>🎉 결과 공개!</h2>
+        <p>제시어가 어떻게 바뀌었는지 확인해보세요</p>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;width:100%;max-width:540px;gap:10px">
+        <div class="reveal-chain-title" id="reveal-chain-title">체인 1</div>
+        <div class="reveal-indicator"  id="reveal-indicator">1 / 1</div>
+      </div>
+
+      <div class="chain-dots" id="chain-dots"></div>
+
+      <div class="reveal-entries" id="reveal-entries"></div>
+
+      <!-- Host sees nav buttons; others see waiting message -->
+      <div class="reveal-nav">
+        <button class="btn btn-primary btn-lg" id="next-entry-btn">다음 →</button>
+        <button class="btn btn-primary btn-lg" id="next-chain-btn" style="display:none">다음 이야기 →</button>
+        <button class="btn btn-dark   btn-lg" id="play-again-btn"  style="display:none">다시 하기 🔄</button>
+      </div>
+      <p class="reveal-host-waiting" id="reveal-host-waiting" style="display:none">
+        방장이 진행 중입니다…
+      </p>
+    </div>
+
+    <!-- Chat sidebar -->
+    <div class="chat-panel">
+      <div class="chat-header">💬 채팅</div>
+      <div class="chat-messages" id="reveal-messages"></div>
+      <div class="chat-input-row">
+        <input type="text" id="reveal-chat-input" placeholder="메시지 입력…" maxlength="200" autocomplete="off">
+        <button class="chat-send" id="reveal-chat-send">↑</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── Toast ── -->
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js" crossorigin="anonymous"></script>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DrawLink — 그림 전달 게임</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+
+<div class="home-wrap">
+  <div style="text-align:center">
+    <div class="home-logo">Draw<span>Link</span></div>
+    <div class="home-tagline">제시어 → 그림 → 유추 → 그림 → … 결과를 같이 보는 게임</div>
+  </div>
+
+  <div class="home-cards">
+
+    <!-- Create -->
+    <div class="home-card">
+      <h2>🎨 방 만들기</h2>
+      <p>내가 방장이 되어 친구들을 초대해요</p>
+      <div class="form-stack">
+        <input type="text" id="create-nick" placeholder="닉네임 입력" maxlength="12" autocomplete="off">
+        <button class="btn btn-primary btn-full btn-lg" id="create-btn">방 만들기 →</button>
+      </div>
+      <p class="error-msg" id="create-error"></p>
+    </div>
+
+    <div class="home-divider">or</div>
+
+    <!-- Join -->
+    <div class="home-card">
+      <h2>🔗 방 참여하기</h2>
+      <p>친구에게 받은 코드나 링크로 참여해요</p>
+      <div class="form-stack">
+        <input type="text" id="join-nick" placeholder="닉네임 입력" maxlength="12" autocomplete="off">
+        <input type="text" id="join-code" placeholder="방 코드 (6자리)" maxlength="6" autocomplete="off"
+               style="text-transform:uppercase;letter-spacing:4px;font-weight:700;text-align:center">
+        <button class="btn btn-ghost btn-full btn-lg" id="join-btn">참여하기 →</button>
+      </div>
+      <p class="error-msg" id="join-error"></p>
+    </div>
+
+  </div>
+
+  <p style="font-size:12px;color:var(--muted);text-align:center">
+    2~8명 · 브라우저 탭을 여러 개 열어 테스트할 수 있어요
+  </p>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js" crossorigin="anonymous"></script>
+<script>
+  const socket = io();
+
+  function showErr(id, msg) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    setTimeout(() => el.textContent = '', 4000);
+  }
+
+  document.getElementById('join-code').addEventListener('input', e => {
+    e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  });
+
+  document.getElementById('create-btn').addEventListener('click', () => {
+    const nick = document.getElementById('create-nick').value.trim();
+    if (!nick) return showErr('create-error', '닉네임을 입력해주세요.');
+    sessionStorage.setItem('pendingNickname', nick);
+    sessionStorage.setItem('pendingAction', 'create');
+    window.location.href = '/room/new';
+  });
+
+  document.getElementById('join-btn').addEventListener('click', () => {
+    const nick = document.getElementById('join-nick').value.trim();
+    const code = document.getElementById('join-code').value.trim().toUpperCase();
+    if (!nick) return showErr('join-error', '닉네임을 입력해주세요.');
+    if (code.length !== 6) return showErr('join-error', '방 코드는 6자리입니다.');
+    sessionStorage.setItem('pendingNickname', nick);
+    sessionStorage.setItem('pendingAction', 'join');
+    sessionStorage.setItem('pendingCode', code);
+    window.location.href = `/room/${code}`;
+  });
+
+  ['create-nick', 'join-nick', 'join-code'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      document.getElementById(id.startsWith('create') ? 'create-btn' : 'join-btn').click();
+    });
+  });
+</script>
+</body>
+</html>

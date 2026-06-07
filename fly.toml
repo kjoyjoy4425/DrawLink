@@ -1,0 +1,18 @@
+# fly.toml — DrawLink Fly.io 설정
+# 배포 전 app 이름을 본인 것으로 바꾸세요
+
+app = "drawlink-yourname"   # ← 여기를 고유한 이름으로 변경
+primary_region = "nrt"      # 도쿄 (한국에서 가장 가까운 Fly.io 리전)
+
+[build]
+  # Dockerfile 자동 감지
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false    # 절대 끄지 마세요 — 꺼지면 방 데이터 날아감
+  auto_start_machines = true
+  min_machines_running = 1      # 최소 1대 항상 실행
+
+[[vm]]
+  size = "shared-cpu-1x"        # 무료 티어 (256MB RAM)
