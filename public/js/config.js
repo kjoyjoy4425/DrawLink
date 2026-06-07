@@ -7,4 +7,4 @@
 //
 //  예시) export const BACKEND_URL = 'https://drawlink-abc123.onrender.com';
 //
-export const BACKEND_URL = '';
+export const BACKEND_URL = 'https://drawlink-server.onrender.com';
