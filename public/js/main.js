@@ -6,6 +6,7 @@ import { sounds, toggleMute } from './sounds.js';
 import { DrawingTool, buildToolbar } from './canvas/tools.js';
 import { setupCanvas }    from './canvas/canvasCore.js';
 import { exportCanvas, displayImage } from './canvas/export.js';
+import { initInAppGuard } from './inapp.js';
 
 // ─── State ───────────────────────────────────────────────────────────────────
 let myPlayerId   = null;
@@ -18,13 +19,28 @@ let revealChainIdx = 0;
 let revealEntryIdx = 0;
 let lastSubmission = null;   // { type, content } — 타이머 만료 자동 제출에 사용
 let currentPhase = null;     // 현재 게임 페이즈 추적
+let inRoom = false;          // 방 입장 여부 (뒤로가기 차단용)
 
-const roomCode = window.location.pathname.split('/').pop().toUpperCase();
+// 방 코드: URL에서 시작값을 읽되, 서버가 알려주는 코드로 항상 덮어쓴다.
+let roomCode = window.location.pathname.split('/').pop().toUpperCase();
+
+// 서버가 알려준 방 코드를 단일 출처로 적용 (모든 사람이 같은 코드를 보게 함)
+function setRoomCode(code) {
+  if (!code) return;
+  roomCode = code.toUpperCase();
+  sessionStorage.setItem('roomCode', roomCode);
+  history.replaceState(null, '', `/room/${roomCode}`);
+  document.querySelectorAll('.room-code-badge').forEach(el => el.textContent = roomCode);
+  const lobbyCode = document.getElementById('lobby-code');
+  if (lobbyCode) lobbyCode.textContent = roomCode;
+}
 
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  initInAppGuard(); // 카톡 등 인앱 브라우저면 외부 브라우저 안내
   bindUI();
   bindAdminUI();
+  setupNavGuard();
   init();
 });
 
@@ -69,6 +85,18 @@ function init() {
   if (codeEl && roomCode !== 'NEW') codeEl.value = roomCode;
 }
 
+// ─── Draft autosave (만료 레이스 방지) ──────────────────────────────────────────
+let _draftTimer = null;
+function scheduleDraft(getContent, delay = 1000) {
+  clearTimeout(_draftTimer);
+  _draftTimer = setTimeout(() => {
+    try {
+      const c = getContent();
+      if (typeof c === 'string' && c.length) socket.emit('save_draft', { content: c });
+    } catch (_) {}
+  }, delay);
+}
+
 // ─── Timer ───────────────────────────────────────────────────────────────────
 function initTimer(seconds, fillId, labelId, onExpire) {
   const fill  = document.getElementById(fillId);
@@ -101,6 +129,8 @@ socket.on('round_info', ({ round, maxRounds, phase }) => {
     el.textContent = `${phaseLabel} ${exchangeNum} / ${totalExchanges}`;
   }
   el.style.display = 'block';
+  currentPhase = phase;
+  refreshAdminPlayerList(); // 게임 중 스킵 버튼 갱신
 });
 
 // ─── 일시정지 / 재개 ──────────────────────────────────────────────────────────
@@ -136,6 +166,80 @@ socket.on('announcement', ({ text }) => {
   setTimeout(() => overlay.style.display = 'none', 5000);
 });
 
+// ─── 게임 시작 카운트다운 (3·2·1·Start!) ────────────────────────────────────────
+socket.on('game_starting', () => { sounds.start(); runCountdown(); });
+
+function runCountdown() {
+  const overlay = document.getElementById('countdown-overlay');
+  const num     = document.getElementById('countdown-number');
+  if (!overlay || !num) return;
+  overlay.style.display = 'flex';
+  const seq = ['3', '2', '1', 'Start!'];
+  let i = 0;
+  const tick = () => {
+    num.textContent = seq[i];
+    num.classList.remove('pop'); void num.offsetWidth; num.classList.add('pop');
+    if (i < 3) sounds.tick(); else sounds.phase();
+    i++;
+    if (i < seq.length) setTimeout(tick, 800);
+    else setTimeout(() => { overlay.style.display = 'none'; }, 700);
+  };
+  tick();
+}
+
+// ─── 신규 관리 이벤트 ────────────────────────────────────────────────────────────
+socket.on('host_changed', ({ hostId: hid, nickname }) => {
+  hostId = hid;
+  if (hid === myPlayerId) showToast('당신이 방장이 되었습니다 👑', 'success');
+  else showToast(`${esc(nickname)}님이 방장이 되었습니다.`);
+  renderPlayers(players);
+  updateHostUI();
+});
+
+socket.on('lock_changed', ({ locked }) => {
+  const btn = document.getElementById('admin-lock-btn');
+  if (btn) btn.textContent = locked ? '🔓 입장 잠금 해제' : '🔒 입장 잠그기';
+  showToast(locked ? '입장을 잠갔습니다.' : '입장 잠금을 해제했습니다.', 'success');
+});
+
+socket.on('autoadvance_changed', ({ enabled }) => {
+  const btn = document.getElementById('admin-autoadvance-btn');
+  if (btn) btn.textContent = enabled ? '⏩ 자동 진행: 켜짐' : '⏸ 자동 진행: 꺼짐';
+});
+
+socket.on('all_ready', ({ players: list }) => { renderPlayers(list); });
+socket.on('order_shuffled', ({ players: list }) => { renderPlayers(list); showToast('순서를 섞었습니다.', 'success'); });
+
+// ─── 재접속 & 이탈 방지 ──────────────────────────────────────────────────────────
+let _firstConnect = true;
+socket.on('connect', () => {
+  if (_firstConnect) { _firstConnect = false; return; } // 최초 연결은 init()이 처리
+  const savedId   = sessionStorage.getItem('playerId');
+  const savedRoom = sessionStorage.getItem('roomCode');
+  if (savedId && savedRoom) {
+    socket.emit('reconnect_attempt', { playerId: savedId, roomCode: savedRoom });
+  }
+});
+
+// 백그라운드 → 복귀 시 소켓이 끊겨 있으면 즉시 재연결
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && socket.disconnected) socket.connect();
+});
+
+// 뒤로가기 / 위로 스와이프(새로고침) 차단
+function setupNavGuard() {
+  history.pushState({ drawlink: true }, '', location.href);
+  window.addEventListener('popstate', () => {
+    if (inRoom) {
+      history.pushState({ drawlink: true }, '', location.href);
+      showToast('게임 중에는 뒤로 갈 수 없어요', 'error');
+    }
+  });
+  window.addEventListener('beforeunload', (e) => {
+    if (inRoom) { e.preventDefault(); e.returnValue = ''; return ''; }
+  });
+}
+
 // ─── Lobby helpers ────────────────────────────────────────────────────────────
 function renderPlayers(list) {
   players = list;
@@ -170,21 +274,17 @@ function updateHostUI() {
 
 // ─── Socket: room events ──────────────────────────────────────────────────────
 socket.on('room_created', ({ roomCode: code, playerId, players: list, hostId: hid }) => {
-  myPlayerId = playerId; hostId = hid;
+  myPlayerId = playerId; hostId = hid; inRoom = true;
   sessionStorage.setItem('playerId', playerId);
-  sessionStorage.setItem('roomCode', code);
-  history.replaceState(null, '', `/room/${code}`);
-  document.querySelectorAll('.room-code-badge').forEach(el => el.textContent = code);
-  document.getElementById('lobby-code').textContent = code;
+  setRoomCode(code);
   renderPlayers(list);
   showScreen('lobby');
 });
 
-socket.on('join_ok', ({ playerId, players: list, hostId: hid }) => {
-  myPlayerId = playerId; hostId = hid;
+socket.on('join_ok', ({ roomCode: code, playerId, players: list, hostId: hid }) => {
+  myPlayerId = playerId; hostId = hid; inRoom = true;
   sessionStorage.setItem('playerId', playerId);
-  sessionStorage.setItem('roomCode', roomCode);
-  document.getElementById('lobby-code').textContent = roomCode;
+  setRoomCode(code || roomCode); // 서버가 알려준 코드를 우선 사용
   renderPlayers(list);
   showScreen('lobby');
 });
@@ -235,14 +335,13 @@ socket.on('ready_update', ({ playerId, ready }) => {
 
 socket.on('start_error', ({ message }) => { showToast(message, 'error'); sounds.error(); });
 
-socket.on('reconnect_ok', ({ phase, players: list, hostId: hid, myPlayerId: pid,
+socket.on('reconnect_ok', ({ roomCode: code, phase, players: list, hostId: hid, myPlayerId: pid,
                              assignment, secondsLeft, chains, paused }) => {
-  myPlayerId = pid; hostId = hid; players = list;
+  myPlayerId = pid; hostId = hid; players = list; inRoom = true;
   sessionStorage.setItem('playerId', pid);
-  sessionStorage.setItem('roomCode', roomCode);
+  setRoomCode(code || roomCode);
 
   if (phase === 'LOBBY') {
-    document.getElementById('lobby-code').textContent = roomCode;
     renderPlayers(list); showScreen('lobby');
   } else if (phase === 'WRITING') {
     showWritingScreen(secondsLeft);
@@ -323,16 +422,23 @@ function showDrawingScreen(prompt, timeLimit) {
   const submitBtn = document.getElementById('draw-submit');
   submitBtn.disabled = true;
 
+  // ★ 캔버스를 측정하려면 먼저 화면을 보여줘야 한다 (display:none이면 크기가 0)
+  showPauseBanner(false);
+  showAdminSection('game');
+  showScreen('drawing');
+
   const canvas = document.getElementById('draw-canvas');
   const ctx    = setupCanvas(canvas);
   drawTool = new DrawingTool(canvas, ctx, () => {
     submitBtn.disabled = !drawTool.hasStrokes();
+    // 그릴 때마다 임시 저장 (시간 만료/이탈 시 그림 유실 방지)
+    scheduleDraft(() => exportCanvas(canvas), 1500);
   });
 
   if (lastSubmission?.type === 'drawing' && lastSubmission.content) {
     const img = new Image();
     img.onload = () => {
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height); // 새 캔버스 크기에 맞춰 복원
       drawTool.history.push(canvas.toDataURL('image/png'));
       submitBtn.disabled = false;
     };
@@ -340,9 +446,6 @@ function showDrawingScreen(prompt, timeLimit) {
   }
 
   buildToolbar(document.getElementById('toolbar'), drawTool);
-  showPauseBanner(false);
-  showAdminSection('game');
-  showScreen('drawing');
 
   initTimer(timeLimit, 'drawing-timer-fill', 'drawing-timer-label', () => {
     // ★ 타이머 만료 시 현재 그림 자동 제출
@@ -539,19 +642,34 @@ function showAdminSection(section) {
 function refreshAdminPlayerList() {
   const list = document.getElementById('admin-player-list');
   if (!list) return;
-  list.innerHTML = players.map(p => `
-    <div class="admin-player-item">
+  const inGame = ['WRITING', 'DRAWING', 'GUESSING'].includes(currentPhase);
+  list.innerHTML = players.map(p => {
+    if (p.id === myPlayerId) {
+      return `<div class="admin-player-item">
+        <span class="admin-player-nick">${esc(p.nickname)}${p.id === hostId ? ' 👑' : ''} (나)</span>
+      </div>`;
+    }
+    return `<div class="admin-player-item">
       <span class="admin-player-nick">${esc(p.nickname)}${p.id === hostId ? ' 👑' : ''}</span>
-      ${p.id !== myPlayerId
-        ? `<button class="admin-kick-btn" data-id="${p.id}">퇴장</button>`
-        : ''}
-    </div>
-  `).join('');
-  list.querySelectorAll('.admin-kick-btn').forEach(btn => {
+      <span class="admin-player-actions">
+        <button class="admin-mini-btn" data-act="host" data-id="${p.id}" title="방장 양도">👑</button>
+        ${inGame ? `<button class="admin-mini-btn" data-act="skip" data-id="${p.id}" title="제출 스킵">⏭</button>` : ''}
+        <button class="admin-kick-btn" data-act="kick" data-id="${p.id}">퇴장</button>
+      </span>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-act]').forEach(btn => {
     btn.addEventListener('click', () => {
+      const id   = btn.dataset.id;
       const name = btn.closest('.admin-player-item').querySelector('.admin-player-nick').textContent.replace(' 👑','').trim();
-      if (confirm(`${name} 님을 퇴장시키겠습니까?`)) {
-        socket.emit('admin_kick', { playerId: btn.dataset.id });
+      if (btn.dataset.act === 'kick') {
+        if (confirm(`${name} 님을 퇴장시키겠습니까?`)) socket.emit('admin_kick', { playerId: id });
+      } else if (btn.dataset.act === 'host') {
+        if (confirm(`${name} 님에게 방장을 넘기겠습니까?`)) socket.emit('admin_transfer_host', { playerId: id });
+      } else if (btn.dataset.act === 'skip') {
+        socket.emit('admin_skip_player', { playerId: id });
+        showToast(`${name} 님 제출을 스킵했습니다.`, 'success');
       }
     });
   });
@@ -612,6 +730,55 @@ function bindAdminUI() {
   });
   document.getElementById('admin-announce-input')?.addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('admin-announce-btn')?.click();
+  });
+
+  // 시간 줄이기
+  document.getElementById('admin-reduce-10')?.addEventListener('click', () => socket.emit('admin_add_time', { seconds: -10 }));
+  document.getElementById('admin-reduce-30')?.addEventListener('click', () => socket.emit('admin_add_time', { seconds: -30 }));
+
+  // 즉시 시간 종료
+  document.getElementById('admin-end-timer')?.addEventListener('click', () => socket.emit('admin_end_timer'));
+
+  // 현재 단계 다시 시작
+  document.getElementById('admin-restart-phase')?.addEventListener('click', () => {
+    if (confirm('현재 단계를 처음부터 다시 시작하겠습니까? (제출이 초기화됩니다)')) socket.emit('admin_restart_phase');
+  });
+
+  // 자동 진행 토글
+  let autoAdv = true;
+  document.getElementById('admin-autoadvance-btn')?.addEventListener('click', function() {
+    autoAdv = !autoAdv;
+    socket.emit('admin_toggle_autoadvance', { enabled: autoAdv });
+    this.textContent = autoAdv ? '⏩ 자동 진행: 켜짐' : '⏸ 자동 진행: 꺼짐';
+  });
+
+  // 입장 잠금 (로비)
+  let locked = false;
+  document.getElementById('admin-lock-btn')?.addEventListener('click', function() {
+    locked = !locked;
+    socket.emit('admin_lock', { locked });
+  });
+
+  // 모두 준비 완료 (로비)
+  document.getElementById('admin-force-ready')?.addEventListener('click', () => socket.emit('admin_force_ready'));
+
+  // 순서 섞기 (로비)
+  document.getElementById('admin-shuffle')?.addEventListener('click', () => socket.emit('admin_shuffle'));
+
+  // 느린 모드 프리셋 (로비)
+  document.getElementById('admin-slow-mode')?.addEventListener('click', () => {
+    const wt = document.getElementById('admin-write-time');
+    const dt = document.getElementById('admin-draw-time');
+    const gt = document.getElementById('admin-guess-time');
+    if (wt) wt.value = 60;
+    if (dt) dt.value = 120;
+    if (gt) gt.value = 60;
+    showToast('느린 모드 적용됨 (60s / 120s / 60s)', 'success');
+  });
+
+  // 공지 프리셋
+  document.querySelectorAll('.admin-preset').forEach(btn => {
+    btn.addEventListener('click', () => socket.emit('admin_announce', { text: btn.dataset.msg }));
   });
 
   // 결과 제어 (관리 패널)
@@ -685,6 +852,7 @@ function bindUI() {
     const n = writingInput.value.length;
     document.getElementById('writing-charcount').textContent = `${n} / 40`;
     document.getElementById('writing-submit').disabled = n === 0;
+    scheduleDraft(() => writingInput.value.trim(), 500);
   });
   document.getElementById('writing-submit')?.addEventListener('click', () => {
     const text = writingInput.value.trim();
@@ -711,6 +879,7 @@ function bindUI() {
     const n = guessInput.value.length;
     document.getElementById('guess-charcount').textContent = `${n} / 40`;
     document.getElementById('guess-submit').disabled = n === 0;
+    scheduleDraft(() => guessInput.value.trim(), 500);
   });
   document.getElementById('guess-submit')?.addEventListener('click', () => {
     const text = guessInput.value.trim();
@@ -733,6 +902,11 @@ function bindUI() {
   });
   document.getElementById('play-again-btn')?.addEventListener('click', () => {
     socket.emit('reveal_action', { type: 'play_again' });
+  });
+
+  // 채팅 접기/펼치기 (특히 모바일에서 그림을 가리지 않도록)
+  document.querySelectorAll('.chat-toggle').forEach(h => {
+    h.addEventListener('click', () => h.closest('.chat-panel')?.classList.toggle('collapsed'));
   });
 
   // Chat

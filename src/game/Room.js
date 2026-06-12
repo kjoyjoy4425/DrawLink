@@ -12,7 +12,11 @@ class Room {
     this.advanceTimeout = null; // grace period timeout handle
     this.secondsLeft = 0;
     this.paused = false;
+    this.locked = false;        // 입장 잠금 (방장 제어)
+    this.autoAdvance = true;    // 모두 제출 시 자동 진행 여부
     this.reconnectTimers = new Map();
+    this.drafts = new Map();    // 임시 저장 (만료 레이스 방지)
+    this.maxPlayers = 10;
     this.settings = {
       writeTime:     30,
       drawTime:      80,

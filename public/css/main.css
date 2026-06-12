@@ -19,15 +19,20 @@
   --shadow-md: 0 4px 24px rgba(43,58,66,0.15);
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
 
 html, body {
-  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Pretendard', 'Pretendard Variable', -apple-system, BlinkMacSystemFont,
+               'Apple SD Gothic Neo', 'Malgun Gothic', 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
   min-height: 100vh;
   font-size: 15px;
+  /* 모바일: 위로 당겨 새로고침/바운스 방지 */
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
 }
+body { overflow-x: hidden; }
 
 /* ─── Utility ─────────────────────────────────────────────────────────────── */
 .hidden { display: none !important; }
@@ -64,7 +69,17 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
 
 /* ─── Screens ────────────────────────────────────────────────────────────── */
 .screen { display: none; }
-.screen.active { display: flex; flex-direction: column; min-height: 100vh; }
+.screen.active {
+  display: flex; flex-direction: column; min-height: 100vh;
+  animation: screenIn 0.34s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes screenIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.992); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen.active { animation: none; }
+}
 
 .center-wrap {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -365,3 +380,110 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
 .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
 .toast.error   { background: var(--primary); }
 .toast.success { background: var(--primary); }
+
+/* ─── 시작 카운트다운 ─────────────────────────────────────────────────────── */
+.countdown-overlay {
+  display: none; position: fixed; inset: 0; z-index: 500;
+  background: rgba(43,58,66,0.82);
+  align-items: center; justify-content: center;
+}
+.countdown-number {
+  font-size: clamp(80px, 28vw, 200px); font-weight: 800; color: #fff;
+  letter-spacing: -2px; text-shadow: 0 6px 30px rgba(0,0,0,0.35);
+}
+.countdown-number.pop { animation: cdPop 0.8s ease; }
+@keyframes cdPop {
+  0%   { transform: scale(0.3); opacity: 0; }
+  30%  { transform: scale(1.15); opacity: 1; }
+  60%  { transform: scale(1); }
+  100% { transform: scale(0.9); opacity: 0.6; }
+}
+
+/* ─── 인앱 브라우저 안내 ───────────────────────────────────────────────────── */
+.inapp-overlay {
+  display: none; position: fixed; inset: 0; z-index: 9000;
+  background: rgba(43,58,66,0.92);
+  align-items: center; justify-content: center; padding: 24px;
+}
+.inapp-card {
+  background: #fff; border-radius: 18px; padding: 30px 26px; max-width: 360px;
+  width: 100%; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+}
+.inapp-emoji { font-size: 44px; margin-bottom: 10px; }
+.inapp-card h3 { font-size: 19px; font-weight: 800; margin-bottom: 10px; color: var(--text); }
+.inapp-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 16px; }
+.inapp-steps {
+  font-size: 13px; color: var(--text); line-height: 1.6; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 18px;
+}
+.inapp-steps b { color: var(--primary); }
+
+/* ─── 채팅 접기 ──────────────────────────────────────────────────────────── */
+.chat-toggle { cursor: pointer; display: flex; align-items: center; justify-content: space-between; }
+.chat-collapse-icon { transition: transform 0.2s; font-size: 11px; }
+.chat-panel.collapsed .chat-collapse-icon { transform: rotate(-90deg); }
+.chat-panel.collapsed .chat-messages,
+.chat-panel.collapsed .chat-input-row { display: none; }
+
+/* ─── 관리 패널 미니 버튼 (양도/스킵) ───────────────────────────────────────── */
+.admin-player-actions { display: flex; gap: 4px; align-items: center; flex-shrink: 0; }
+.admin-mini-btn {
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+  color: var(--white); border-radius: 4px; padding: 3px 7px; font-size: 12px;
+  cursor: pointer; transition: background 0.15s;
+}
+.admin-mini-btn:hover { background: rgba(255,255,255,0.25); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   모바일 반응형 (≤720px) — 핸드폰 우선 레이아웃
+   ════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 720px) {
+  html, body { font-size: 14px; }
+
+  .game-header { height: 48px; padding: 0 12px; }
+  .game-header .logo { font-size: 17px; }
+  #round-indicator { display: none !important; } /* 헤더 공간 절약 (관리패널에서 확인) */
+  .room-code-badge { padding: 4px 9px; font-size: 12px; }
+
+  /* 로비: 채팅을 하단으로, 작게 */
+  .lobby-layout { flex-direction: column; }
+  .lobby-main { padding: 16px 14px; gap: 14px; }
+  .code-big { font-size: 30px; letter-spacing: 4px; }
+  .player-grid { grid-template-columns: repeat(2, 1fr); }
+
+  /* 결과: 그림이 보이도록 채팅을 하단 고정 + 접이식 */
+  .reveal-layout { flex-direction: column; }
+  .reveal-main { padding: 14px 12px; }
+  .reveal-entries { max-height: none; }
+
+  /* 채팅 패널: 화면 하단 가로 전체, 낮게 */
+  .chat-panel {
+    width: 100%; min-width: 0; max-height: 38vh;
+    border-left: none; border-top: 1px solid var(--border);
+  }
+  .chat-messages { max-height: 22vh; }
+  .chat-panel.collapsed { max-height: none; }
+
+  /* 그림 화면 */
+  .drawing-wrap { padding: 8px 10px; gap: 8px; }
+  .drawing-prompt-bar { padding: 7px 12px; }
+  .drawing-prompt-bar .dp-word { font-size: 15px; }
+  .toolbar { padding: 6px 8px; gap: 5px; }
+  .tool-btn { width: 30px; height: 30px; font-size: 15px; }
+
+  /* 입력/제시어/유추 화면 */
+  .phase-wrap { padding: 16px 14px; gap: 12px; }
+  .phase-title { font-size: 19px; }
+
+  /* 관리 패널: 화면을 거의 덮는 시트 */
+  .admin-panel { width: 86vw; max-width: 340px; top: 48px; }
+  .admin-toggle { bottom: 16px; right: 16px; width: 46px; height: 46px; }
+
+  .pause-banner, #pause-banner { top: 48px !important; }
+}
+
+/* 아주 좁은 화면 */
+@media (max-width: 380px) {
+  .player-grid { grid-template-columns: 1fr; }
+  .lobby-actions { flex-direction: column; }
+}

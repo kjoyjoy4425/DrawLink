@@ -2,8 +2,9 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>DrawLink</title>
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
   <link rel="stylesheet" href="/css/main.css">
   <link rel="stylesheet" href="/css/canvas.css">
 </head>
@@ -42,8 +43,18 @@
       0 = 자동 (플레이어 수에 맞게)<br>
       1 = 그림1번+추리1번, 2 = 그림2번+추리2번…
     </p>
-    <button class="admin-btn full" id="admin-quick-mode" style="margin-top:10px">⚡ 빠른 모드 (15s/40s/20s)</button>
+    <div class="admin-btn-row" style="margin-top:10px;gap:6px">
+      <button class="admin-btn" id="admin-quick-mode">⚡ 빠른 모드</button>
+      <button class="admin-btn" id="admin-slow-mode">🐢 느린 모드</button>
+    </div>
     <p style="font-size:11px;color:var(--muted);margin-top:8px">게임 시작 버튼을 누를 때 적용됩니다</p>
+
+    <h4 style="margin-top:14px">👥 로비 관리</h4>
+    <div class="admin-btn-row" style="flex-direction:column;gap:6px">
+      <button class="admin-btn full" id="admin-force-ready">✅ 모두 준비 완료</button>
+      <button class="admin-btn full" id="admin-shuffle">🔀 순서 섞기</button>
+      <button class="admin-btn full" id="admin-lock-btn">🔒 입장 잠그기</button>
+    </div>
   </div>
 
   <!-- 게임 중 제어 -->
@@ -55,9 +66,16 @@
       <button class="admin-btn" id="admin-add-30">+30초</button>
       <button class="admin-btn" id="admin-add-60">+1분</button>
     </div>
+    <div class="admin-btn-row" style="margin-top:6px">
+      <button class="admin-btn" id="admin-reduce-10">-10초</button>
+      <button class="admin-btn" id="admin-reduce-30">-30초</button>
+      <button class="admin-btn" id="admin-end-timer">⏱ 즉시 종료</button>
+    </div>
     <h4 style="margin-top:12px">⚙️ 게임 제어</h4>
     <div class="admin-btn-row" style="flex-direction:column;gap:6px">
       <button class="admin-btn full" id="admin-pause-btn">⏸ 일시정지</button>
+      <button class="admin-btn full" id="admin-autoadvance-btn">⏩ 자동 진행: 켜짐</button>
+      <button class="admin-btn full" id="admin-restart-phase">🔄 현재 단계 다시 시작</button>
       <button class="admin-btn full danger" id="admin-force-next">⏭ 강제 다음 단계</button>
       <button class="admin-btn full danger" id="admin-end-game">🏁 지금 결과 공개</button>
     </div>
@@ -66,6 +84,11 @@
       <input type="text" id="admin-announce-input" placeholder="공지 내용 입력" maxlength="100"
              style="font-size:12px;padding:6px 10px">
       <button class="admin-btn" id="admin-announce-btn" style="white-space:nowrap;flex-shrink:0">전송</button>
+    </div>
+    <div class="admin-btn-row" style="margin-top:6px">
+      <button class="admin-btn admin-preset" data-msg="곧 시작합니다!">곧 시작</button>
+      <button class="admin-btn admin-preset" data-msg="집중해주세요! 🎯">집중!</button>
+      <button class="admin-btn admin-preset" data-msg="마지막 라운드입니다!">마지막</button>
     </div>
   </div>
 
@@ -113,6 +136,23 @@
     <div style="font-size:28px;margin-bottom:12px">📢</div>
     <div style="font-size:18px;font-weight:700;color:var(--text)" id="announcement-text"></div>
     <button id="announcement-close" class="btn btn-ghost btn-sm" style="margin-top:20px">닫기</button>
+  </div>
+</div>
+
+<!-- 시작 카운트다운 오버레이 -->
+<div id="countdown-overlay" class="countdown-overlay">
+  <div id="countdown-number" class="countdown-number">3</div>
+</div>
+
+<!-- 인앱 브라우저 안내 오버레이 -->
+<div id="inapp-overlay" class="inapp-overlay">
+  <div class="inapp-card">
+    <div class="inapp-emoji">🌐</div>
+    <h3>외부 브라우저로 열어주세요</h3>
+    <p class="inapp-desc">카카오톡 등 앱 안에서는 게임이 정상 작동하지 않아요.<br>크롬·사파리 같은 브라우저에서 열면 잘 돼요!</p>
+    <p class="inapp-steps" id="inapp-steps"></p>
+    <button class="btn btn-primary btn-full btn-lg" id="inapp-open-btn">브라우저로 열기</button>
+    <button class="btn btn-ghost btn-full" id="inapp-copy-btn" style="margin-top:8px">주소 복사하기</button>
   </div>
 </div>
 
@@ -172,7 +212,7 @@
       <!-- Players -->
       <div style="width:100%;max-width:600px">
         <div style="font-size:12px;color:var(--muted);margin-bottom:10px">
-          플레이어 <span id="player-count">0</span>명 · 최소 2명, 최대 8명
+          플레이어 <span id="player-count">0</span>명 · 최소 2명, 최대 10명
         </div>
         <div class="player-grid" id="player-grid"></div>
       </div>
@@ -189,8 +229,8 @@
     </div>
 
     <!-- Chat sidebar -->
-    <div class="chat-panel">
-      <div class="chat-header">💬 채팅</div>
+    <div class="chat-panel" id="lobby-chat-panel">
+      <div class="chat-header chat-toggle">💬 채팅 <span class="chat-collapse-icon">▾</span></div>
       <div class="chat-messages" id="lobby-messages"></div>
       <div class="chat-input-row">
         <input type="text" id="lobby-chat-input" placeholder="메시지 입력…" maxlength="200" autocomplete="off">
@@ -319,8 +359,8 @@
     </div>
 
     <!-- Chat sidebar -->
-    <div class="chat-panel">
-      <div class="chat-header">💬 채팅</div>
+    <div class="chat-panel" id="reveal-chat-panel">
+      <div class="chat-header chat-toggle">💬 채팅 <span class="chat-collapse-icon">▾</span></div>
       <div class="chat-messages" id="reveal-messages"></div>
       <div class="chat-input-row">
         <input type="text" id="reveal-chat-input" placeholder="메시지 입력…" maxlength="200" autocomplete="off">

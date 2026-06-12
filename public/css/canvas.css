@@ -52,3 +52,20 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* Fill cursor */
 .draw-canvas.tool-fill { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20'%3E%3Ctext y='16' font-size='16'%3E🪣%3C/text%3E%3C/svg%3E") 0 18, crosshair; }
+
+/* ─── 모바일 ─────────────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  /* 도구 막대: 한 줄로 가로 스크롤 (줄바꿈으로 화면 차지 방지) */
+  .toolbar {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .toolbar::-webkit-scrollbar { display: none; }
+  .color-palette { flex-wrap: nowrap; }
+  .color-swatch, #color-custom { width: 22px; height: 22px; }
+  input[type="range"] { width: 60px; }
+  .size-wrap label { display: none; }
+
+  /* 캔버스 영역: 화면 높이에 맞춰 충분히 크게, 전체가 그려지도록 */
+  .canvas-container { min-height: 46vh; }
+}

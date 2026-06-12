@@ -1,4 +1,4 @@
-import { getPos, clearCanvas } from './canvasCore.js';
+import { getPos, clearCanvas, strokeScale } from './canvasCore.js';
 
 const COLORS = [
   '#2b3a42','#4f6d7a','#90a4ae','#cfd8dc','#f4f7f8',
@@ -77,13 +77,46 @@ export class DrawingTool {
 
   _bind() {
     const c = this.canvas;
-    c.addEventListener('mousedown',  e => this._start(e));
-    c.addEventListener('mousemove',  e => this._move(e));
-    c.addEventListener('mouseup',    e => this._end(e));
-    c.addEventListener('mouseleave', e => this._end(e));
-    c.addEventListener('touchstart', e => { e.preventDefault(); this._start(e); }, { passive: false });
-    c.addEventListener('touchmove',  e => { e.preventDefault(); this._move(e); }, { passive: false });
-    c.addEventListener('touchend',   e => { e.preventDefault(); this._end(e);  }, { passive: false });
+    // 이전 라운드에서 같은 canvas에 붙은 리스너 제거 (중복 누적 방지)
+    if (c._drawAC) c._drawAC.abort();
+    this._ac = new AbortController();
+    c._drawAC = this._ac;
+    const opt = { signal: this._ac.signal };
+    const popt = { passive: false, signal: this._ac.signal };
+
+    c.addEventListener('mousedown',  e => this._start(e), opt);
+    c.addEventListener('mousemove',  e => this._move(e), opt);
+    c.addEventListener('mouseup',    e => this._end(e), opt);
+    c.addEventListener('mouseleave', e => this._end(e), opt);
+    c.addEventListener('touchstart', e => { e.preventDefault(); this._start(e); }, popt);
+    c.addEventListener('touchmove',  e => { e.preventDefault(); this._move(e); }, popt);
+    c.addEventListener('touchend',   e => { e.preventDefault(); this._end(e);  }, popt);
+    c.addEventListener('touchcancel',e => { this._end(e); }, popt);
+
+    // 화면 회전/리사이즈 시 현재 그림 보존하며 캔버스 재설정
+    let rt = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(rt);
+      rt = setTimeout(() => this.resize(), 200);
+    }, opt);
+  }
+
+  resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    const dpr  = Math.min(window.devicePixelRatio || 1, 2);
+    const w = Math.max(1, Math.round(rect.width  * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (w === this.canvas.width && h === this.canvas.height) return;
+    const data = this.canvas.toDataURL('image/png');
+    const img  = new Image();
+    img.onload = () => {
+      this.canvas.width = w; this.canvas.height = h;
+      this.ctx.globalCompositeOperation = 'source-over';
+      this.ctx.fillStyle = '#ffffff';
+      this.ctx.fillRect(0, 0, w, h);
+      this.ctx.drawImage(img, 0, 0, w, h);
+    };
+    img.src = data;
   }
 
   _start(e) {
@@ -126,7 +159,8 @@ export class DrawingTool {
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = this.color;
     }
-    ctx.lineWidth  = this.size;
+    // 비트맵이 표시 크기보다 크면(고해상도) 굵기도 같은 비율로 키워 손맛 유지
+    ctx.lineWidth  = this.size * strokeScale(this.canvas);
     ctx.lineCap    = 'round';
     ctx.lineJoin   = 'round';
   }
@@ -147,7 +181,10 @@ export class DrawingTool {
       clearCanvas(ctx);
     } else {
       const img = new Image();
-      img.onload = () => { ctx.clearRect(0, 0, this.canvas.width, this.canvas.height); ctx.drawImage(img, 0, 0); };
+      img.onload = () => {
+        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.drawImage(img, 0, 0, this.canvas.width, this.canvas.height);
+      };
       img.src = this.history[this.history.length - 1];
     }
     if (this.onStroke) this.onStroke();

@@ -27,14 +27,22 @@ function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
 function fillMissing(room) {
   for (const player of room.players.values()) {
     if (!room.submissions.has(player.id)) {
-      room.submissions.set(player.id, room.phase === 'DRAWING' ? '__blank__' : '???');
+      // 드래프트(임시 저장)가 있으면 그것을 사용 — 만료 레이스로 인한 ???/빈그림 방지
+      const draft = room.drafts.get(player.id);
+      if (draft !== undefined && draft !== null && draft !== '') {
+        room.submissions.set(player.id, draft);
+      } else {
+        room.submissions.set(player.id, room.phase === 'DRAWING' ? '__blank__' : '???');
+      }
     }
   }
 }
 
 function broadcastCount(room) {
-  const submitted = [...room.players.values()].filter(p => room.submissions.has(p.id)).length;
-  io.to(room.code).emit('submission_count', { submitted, total: room.players.size });
+  // 분모는 "현재 접속 중인" 플레이어 기준 — 나간 사람을 기다리는 것처럼 보이지 않게
+  const connected = room.getConnectedPlayers();
+  const submitted = connected.filter(p => room.submissions.has(p.id)).length;
+  io.to(room.code).emit('submission_count', { submitted, total: connected.length });
 }
 
 function broadcastRoundInfo(room) {
@@ -49,6 +57,7 @@ function broadcastRoundInfo(room) {
 function checkAdvance(room) {
   if (!['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) return;
   if (room.paused) return;
+  if (!room.autoAdvance) return; // 자동 진행 꺼져 있으면 방장이 수동으로만 진행
   const connected = room.getConnectedPlayers();
   if (connected.length === 0) return;
   if (connected.every(p => room.submissions.has(p.id))) advance(room);
@@ -67,11 +76,12 @@ function startTimer(room, seconds) {
     if (room.secondsLeft <= 0) {
       clearInterval(room.timer);
       room.timer = null;
-      // 1초 유예: 클라이언트가 자동 제출할 시간
+      // 2.5초 유예: 느린 모바일/네트워크에서도 클라이언트 자동 제출이 도착하도록
+      // (드래프트 자동저장과 함께 ???/빈그림 유실을 이중으로 방지)
       room.advanceTimeout = setTimeout(() => {
         room.advanceTimeout = null;
         advance(room);
-      }, 1000);
+      }, 2500);
     }
   }, 1000);
 }
@@ -88,6 +98,7 @@ function advance(room) {
 
   room.round++;
   room.submissions.clear();
+  room.drafts.clear();
   room.paused = false;
 
   const maxR = room.getMaxRounds();
@@ -106,6 +117,7 @@ function startWriting(room) {
   room.phase = 'WRITING';
   room.round = 0;
   room.submissions.clear();
+  room.drafts.clear();
   room.chains = initChains(room.getPlayerArray());
 
   const tl = room.settings.writeTime;
@@ -184,13 +196,14 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(code);
     if (!room)                  return socket.emit('join_error', { message: '존재하지 않는 방입니다.' });
     if (room.phase !== 'LOBBY') return socket.emit('join_error', { message: '이미 게임이 시작되었습니다.' });
-    if (room.players.size >= 8) return socket.emit('join_error', { message: '방이 가득 찼습니다. (최대 8명)' });
+    if (room.locked)            return socket.emit('join_error', { message: '방장이 입장을 잠갔습니다.' });
+    if (room.players.size >= room.maxPlayers) return socket.emit('join_error', { message: `방이 가득 찼습니다. (최대 ${room.maxPlayers}명)` });
 
     const player = room.addPlayer(socket.id, nick);
     roomManager.registerSocket(socket.id, code);
     socket.join(code);
 
-    socket.emit('join_ok', { playerId: socket.id, players: room.getPlayerArray(), hostId: room.hostId });
+    socket.emit('join_ok', { roomCode: code, playerId: socket.id, players: room.getPlayerArray(), hostId: room.hostId });
     socket.to(code).emit('player_joined', { player });
   });
 
@@ -219,7 +232,18 @@ io.on('connection', (socket) => {
       ? Math.min(1 + room.settings.exchangeCount * 2, room.players.size)
       : (clamp(parseInt(s.maxRounds) || 0, 0, room.players.size) || room.players.size);
 
-    startWriting(room);
+    // 3·2·1·Start! 카운트다운 후 시작 (모든 클라이언트 동기화)
+    room.phase = 'COUNTDOWN';
+    io.to(room.code).emit('game_starting');
+    setTimeout(() => {
+      if (room.phase !== 'COUNTDOWN') return;
+      if (room.getConnectedPlayers().length < 2) {
+        room.phase = 'LOBBY';
+        io.to(room.code).emit('lobby_reset', { players: room.getPlayerArray(), hostId: room.hostId });
+        return;
+      }
+      startWriting(room);
+    }, 3400);
   });
 
   // ── Submissions ──────────────────────────────────────────────────────────────
@@ -249,6 +273,16 @@ io.on('connection', (socket) => {
     socket.emit('submission_ok');
     broadcastCount(room);
     checkAdvance(room);
+  });
+
+  // ── Draft autosave (만료 레이스 방지) ──────────────────────────────────────────
+  socket.on('save_draft', ({ content }) => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || !['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) return;
+    if (room.submissions.has(socket.id)) return; // 이미 제출했으면 무시
+    if (typeof content !== 'string') return;
+    // 그림은 dataURL이라 큼 — 과도하게 큰 페이로드는 잘라냄(약 2MB)
+    room.drafts.set(socket.id, content.slice(0, 2_000_000));
   });
 
   // ── Re-edit ──────────────────────────────────────────────────────────────────
@@ -392,6 +426,87 @@ io.on('connection', (socket) => {
     startReveal(room);
   });
 
+  // ── 신규 관리 기능 ─────────────────────────────────────────────────────────────
+
+  // 호스트(방장) 양도
+  socket.on('admin_transfer_host', ({ playerId }) => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    const target = room.players.get(playerId);
+    if (!target || !target.connected || playerId === socket.id) return;
+    room.hostId = playerId;
+    io.to(room.code).emit('host_changed', { hostId: playerId, nickname: target.nickname });
+  });
+
+  // 즉시 시간 종료 (현재 단계 마감)
+  socket.on('admin_end_timer', () => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    if (!['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase) || room.paused) return;
+    room.secondsLeft = 1;
+    io.to(room.code).emit('timer_tick', { secondsLeft: 1 });
+  });
+
+  // 자동 진행 토글
+  socket.on('admin_toggle_autoadvance', ({ enabled }) => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    room.autoAdvance = !!enabled;
+    io.to(room.code).emit('autoadvance_changed', { enabled: room.autoAdvance });
+    if (room.autoAdvance) checkAdvance(room);
+  });
+
+  // 현재 단계 다시 시작 (시간 초기화 + 제출 리셋)
+  socket.on('admin_restart_phase', () => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    if (room.phase === 'WRITING')      startWriting(room);
+    else if (room.phase === 'DRAWING') { room.round = Math.max(1, room.round); startDrawing(room); }
+    else if (room.phase === 'GUESSING') startGuessing(room);
+    else return;
+  });
+
+  // 특정 플레이어 제출 강제 완료 (그 사람을 기다리지 않고 진행)
+  socket.on('admin_skip_player', ({ playerId }) => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    if (!['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) return;
+    if (room.submissions.has(playerId)) return;
+    const draft = room.drafts.get(playerId);
+    room.submissions.set(playerId, (draft && draft !== '')
+      ? draft : (room.phase === 'DRAWING' ? '__blank__' : '???'));
+    broadcastCount(room);
+    checkAdvance(room);
+  });
+
+  // 입장 잠금/해제 (로비)
+  socket.on('admin_lock', ({ locked }) => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id) return;
+    room.locked = !!locked;
+    io.to(room.code).emit('lock_changed', { locked: room.locked });
+  });
+
+  // 모두 준비 완료 처리 (로비)
+  socket.on('admin_force_ready', () => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id || room.phase !== 'LOBBY') return;
+    for (const p of room.players.values()) p.ready = true;
+    io.to(room.code).emit('all_ready', { players: room.getPlayerArray() });
+  });
+
+  // 플레이어 순서 섞기 (로비)
+  socket.on('admin_shuffle', () => {
+    const room = roomManager.getRoomBySocket(socket.id);
+    if (!room || room.hostId !== socket.id || room.phase !== 'LOBBY') return;
+    const arr = room.getPlayerArray();
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i].order, arr[j].order] = [arr[j].order, arr[i].order];
+    }
+    io.to(room.code).emit('order_shuffled', { players: room.getPlayerArray() });
+  });
+
   // ── Reconnect ────────────────────────────────────────────────────────────────
 
   socket.on('reconnect_attempt', ({ playerId, roomCode }) => {
@@ -427,6 +542,7 @@ io.on('connection', (socket) => {
 
     socket.join(room.code);
     socket.emit('reconnect_ok', {
+      roomCode: room.code,
       phase: room.phase, players: room.getPlayerArray(),
       hostId: room.hostId, myPlayerId: socket.id,
       assignment: room.currentAssignments.get(socket.id) || null,
@@ -465,6 +581,19 @@ io.on('connection', (socket) => {
       if (next) { room.hostId = next.id; newHostId = next.id; }
     }
     io.to(room.code).emit('player_left', { playerId: socket.id, newHostId });
+
+    // 나간 사람을 기다리는 것처럼 보이지 않도록 즉시 카운트 갱신 후 진행 판정
+    broadcastCount(room);
+
+    // 접속자가 2명 미만으로 줄면 게임을 정리하고 결과로 이동
+    if (room.getConnectedPlayers().length < 2 && ['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) {
+      if (room.timer)          { clearInterval(room.timer); room.timer = null; }
+      if (room.advanceTimeout) { clearTimeout(room.advanceTimeout); room.advanceTimeout = null; }
+      fillMissing(room);
+      processSubmissions(room.chains, room.submissions, room.round, room.getPlayerArray());
+      startReveal(room);
+      return;
+    }
 
     const handle = setTimeout(() => {
       room.reconnectTimers.delete(socket.id);
