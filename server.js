@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const path = require('path');
 const RoomManager = require('./src/game/RoomManager');
@@ -23,6 +24,42 @@ app.get('/room/:code', (req, res) => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function clamp(val, min, max) { return Math.max(min, Math.min(max, val)); }
+
+// 보안: 추측 불가능한 세션 토큰 (재접속 시 본인 확인용)
+function genToken() { return crypto.randomBytes(24).toString("hex"); }
+
+// 보안: 제어문자 제거 (주입/화면깨짐 방지)
+function stripCtrl(s) {
+  let out = "";
+  for (const ch of String(s == null ? "" : s)) {
+    const c = ch.codePointAt(0);
+    if (c >= 32 && c !== 127) out += ch;
+  }
+  return out;
+}
+
+// 보안: 닉네임 정제 (제어문자 제거 + 길이 제한)
+function cleanNickname(s) { return stripCtrl(s).trim().slice(0, 12); }
+
+// 보안: 짧은 텍스트(제시어/유추) 정제
+function cleanText(s, max = 100) { return stripCtrl(s).trim().slice(0, max); }
+
+// 보안: 그림 데이터가 진짜 이미지 dataURL인지 + 과도하게 크지 않은지 검증 (XSS/DoS 방지)
+const MAX_IMAGE_BYTES = 3000000;
+const IMAGE_RE = new RegExp('^data:image/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$');
+function isImageData(s) {
+  return typeof s === 'string' && s.length <= MAX_IMAGE_BYTES && IMAGE_RE.test(s);
+}
+
+// 보안: 간단한 per-socket 레이트리밋 (플러딩 방지)
+function tooFast(socket, key, ms) {
+  const now = Date.now();
+  if (!socket.data) socket.data = {};
+  const last = socket.data[key] || 0;
+  if (now - last < ms) return true;
+  socket.data[key] = now;
+  return false;
+}
 
 function fillMissing(room) {
   for (const player of room.players.values()) {
@@ -178,19 +215,23 @@ io.on('connection', (socket) => {
   // ── Room management ──────────────────────────────────────────────────────────
 
   socket.on('create_room', ({ nickname }) => {
-    const nick = (nickname || '').trim();
+    if (tooFast(socket, 'createJoin', 500)) return;
+    const nick = cleanNickname(nickname);
     if (!nick) return;
     const room = roomManager.createRoom(socket.id, nick);
+    const token = genToken();
+    room.tokens.set(socket.id, token);
     socket.join(room.code);
     socket.emit('room_created', {
-      roomCode: room.code, playerId: socket.id,
+      roomCode: room.code, playerId: socket.id, token,
       players: room.getPlayerArray(), hostId: room.hostId
     });
   });
 
   socket.on('join_room', ({ roomCode, nickname }) => {
-    const code = (roomCode || '').toUpperCase().trim();
-    const nick = (nickname || '').trim();
+    if (tooFast(socket, 'createJoin', 500)) return;
+    const code = String(roomCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    const nick = cleanNickname(nickname);
     if (!code || !nick) return socket.emit('join_error', { message: '방 코드와 닉네임을 입력해주세요.' });
 
     const room = roomManager.getRoom(code);
@@ -200,10 +241,12 @@ io.on('connection', (socket) => {
     if (room.players.size >= room.maxPlayers) return socket.emit('join_error', { message: `방이 가득 찼습니다. (최대 ${room.maxPlayers}명)` });
 
     const player = room.addPlayer(socket.id, nick);
+    const token = genToken();
+    room.tokens.set(socket.id, token);
     roomManager.registerSocket(socket.id, code);
     socket.join(code);
 
-    socket.emit('join_ok', { roomCode: code, playerId: socket.id, players: room.getPlayerArray(), hostId: room.hostId });
+    socket.emit('join_ok', { roomCode: code, playerId: socket.id, token, players: room.getPlayerArray(), hostId: room.hostId });
     socket.to(code).emit('player_joined', { player });
   });
 
@@ -251,7 +294,7 @@ io.on('connection', (socket) => {
   socket.on('submit_word', ({ text }) => {
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || room.phase !== 'WRITING' || room.submissions.has(socket.id)) return;
-    room.submissions.set(socket.id, (text || '').trim() || '???');
+    room.submissions.set(socket.id, cleanText(text, 100) || '???');
     socket.emit('submission_ok');
     broadcastCount(room);
     checkAdvance(room);
@@ -260,7 +303,8 @@ io.on('connection', (socket) => {
   socket.on('submit_drawing', ({ imageData }) => {
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || room.phase !== 'DRAWING' || room.submissions.has(socket.id)) return;
-    room.submissions.set(socket.id, imageData || '__blank__');
+    // 보안: 유효한 이미지 dataURL만 허용 (아니면 빈 그림) — XSS/DoS 방지
+    room.submissions.set(socket.id, isImageData(imageData) ? imageData : '__blank__');
     socket.emit('submission_ok');
     broadcastCount(room);
     checkAdvance(room);
@@ -269,7 +313,7 @@ io.on('connection', (socket) => {
   socket.on('submit_guess', ({ text }) => {
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || room.phase !== 'GUESSING' || room.submissions.has(socket.id)) return;
-    room.submissions.set(socket.id, (text || '').trim() || '???');
+    room.submissions.set(socket.id, cleanText(text, 100) || '???');
     socket.emit('submission_ok');
     broadcastCount(room);
     checkAdvance(room);
@@ -277,12 +321,17 @@ io.on('connection', (socket) => {
 
   // ── Draft autosave (만료 레이스 방지) ──────────────────────────────────────────
   socket.on('save_draft', ({ content }) => {
+    if (tooFast(socket, 'draft', 250)) return; // 플러딩 방지
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || !['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) return;
     if (room.submissions.has(socket.id)) return; // 이미 제출했으면 무시
     if (typeof content !== 'string') return;
-    // 그림은 dataURL이라 큼 — 과도하게 큰 페이로드는 잘라냄(약 2MB)
-    room.drafts.set(socket.id, content.slice(0, 2_000_000));
+    if (room.phase === 'DRAWING') {
+      // 보안: 그림 드래프트는 유효한 이미지 dataURL만 (아니면 무시)
+      if (isImageData(content)) room.drafts.set(socket.id, content);
+    } else {
+      room.drafts.set(socket.id, cleanText(content, 100));
+    }
   });
 
   // ── Re-edit ──────────────────────────────────────────────────────────────────
@@ -310,11 +359,12 @@ io.on('connection', (socket) => {
   // ── Chat ─────────────────────────────────────────────────────────────────────
 
   socket.on('chat_message', ({ text }) => {
+    if (tooFast(socket, 'chat', 400)) return; // 스팸 방지
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room) return;
     const player = room.players.get(socket.id);
     if (!player || !['LOBBY', 'REVEAL'].includes(room.phase)) return;
-    const clean = (text || '').trim().slice(0, 200);
+    const clean = cleanText(text, 200);
     if (!clean) return;
     io.to(room.code).emit('chat_broadcast', {
       nickname: player.nickname, text: clean, isHost: player.id === room.hostId
@@ -334,7 +384,7 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id || room.phase !== 'REVEAL') return;
 
     for (const [id, player] of room.players) {
-      if (!player.connected) { room.players.delete(id); roomManager.unregisterSocket(id); }
+      if (!player.connected) { room.players.delete(id); room.tokens.delete(id); roomManager.unregisterSocket(id); }
     }
     let order = 0;
     for (const player of room.players.values()) {
@@ -377,12 +427,23 @@ io.on('connection', (socket) => {
     if (targetSocket) { targetSocket.emit('kicked'); targetSocket.leave(room.code); targetSocket.disconnect(true); }
 
     room.players.delete(playerId);
+    room.tokens.delete(playerId);
+    room.drafts.delete(playerId);
     roomManager.unregisterSocket(playerId);
     io.to(room.code).emit('player_kicked', { playerId, nickname: target.nickname });
 
-    if (['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase) && !room.submissions.has(playerId)) {
-      room.submissions.set(playerId, room.phase === 'DRAWING' ? '__blank__' : '???');
+    if (['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) {
+      room.submissions.delete(playerId); // 더 이상 이 사람을 기다리지 않음
       broadcastCount(room);
+      // 강퇴로 접속자가 2명 미만이 되면 게임을 정리하고 결과로 이동
+      if (room.getConnectedPlayers().length < 2) {
+        if (room.timer)          { clearInterval(room.timer); room.timer = null; }
+        if (room.advanceTimeout) { clearTimeout(room.advanceTimeout); room.advanceTimeout = null; }
+        fillMissing(room);
+        processSubmissions(room.chains, room.submissions, room.round, room.getPlayerArray());
+        startReveal(room);
+        return;
+      }
       checkAdvance(room);
     }
     if (room.isEmpty() && room.phase === 'LOBBY') roomManager.deleteRoom(room.code);
@@ -409,7 +470,7 @@ io.on('connection', (socket) => {
   socket.on('admin_announce', ({ text }) => {
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || room.hostId !== socket.id) return;
-    const clean = (text || '').trim().slice(0, 100);
+    const clean = cleanText(text, 100);
     if (!clean) return;
     io.to(room.code).emit('announcement', { text: clean });
   });
@@ -444,7 +505,7 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id) return;
     const target = room.players.get(playerId);
     if (!target) return;
-    const clean = (nickname || '').trim().slice(0, 12);
+    const clean = cleanNickname(nickname);
     if (!clean || clean === target.nickname) return;
     // 같은 방 내 중복 방지 (대상 본인 제외)
     const taken = new Set([...room.players.values()].filter(p => p.id !== playerId).map(p => p.nickname));
@@ -528,12 +589,18 @@ io.on('connection', (socket) => {
 
   // ── Reconnect ────────────────────────────────────────────────────────────────
 
-  socket.on('reconnect_attempt', ({ playerId, roomCode }) => {
+  socket.on('reconnect_attempt', ({ playerId, roomCode, token }) => {
     const room = roomManager.getRoom(roomCode);
     if (!room) return socket.emit('reconnect_fail', { message: '방을 찾을 수 없습니다.' });
 
     const player = [...room.players.values()].find(p => p.id === playerId);
     if (!player) return socket.emit('reconnect_fail', { message: '플레이어를 찾을 수 없습니다.' });
+
+    // 보안: 본인 토큰이 일치해야만 재접속 허용 (타인 세션 탈취 방지)
+    const expected = room.tokens.get(playerId);
+    if (!expected || token !== expected) {
+      return socket.emit('reconnect_fail', { message: '재접속 인증에 실패했습니다.' });
+    }
 
     if (room.reconnectTimers.has(playerId)) {
       clearTimeout(room.reconnectTimers.get(playerId));
@@ -546,6 +613,9 @@ io.on('connection', (socket) => {
     player.connected = true;
     room.players.set(socket.id, player);
     roomManager.registerSocket(socket.id, room.code);
+    // 토큰을 새 socket id로 이전
+    room.tokens.delete(playerId);
+    room.tokens.set(socket.id, expected);
     if (room.hostId === playerId) room.hostId = socket.id;
 
     if (room.submissions.has(playerId)) {
@@ -561,7 +631,7 @@ io.on('connection', (socket) => {
 
     socket.join(room.code);
     socket.emit('reconnect_ok', {
-      roomCode: room.code,
+      roomCode: room.code, token: expected,
       phase: room.phase, players: room.getPlayerArray(),
       hostId: room.hostId, myPlayerId: socket.id,
       assignment: room.currentAssignments.get(socket.id) || null,
@@ -582,6 +652,7 @@ io.on('connection', (socket) => {
 
     if (room.phase === 'LOBBY') {
       room.players.delete(socket.id);
+      room.tokens.delete(socket.id);
       roomManager.unregisterSocket(socket.id);
       let newHostId = null;
       if (room.hostId === socket.id) {

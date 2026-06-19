@@ -16,6 +16,7 @@ class Room {
     this.autoAdvance = true;    // 모두 제출 시 자동 진행 여부
     this.reconnectTimers = new Map();
     this.drafts = new Map();    // 임시 저장 (만료 레이스 방지)
+    this.tokens = new Map();    // playerId → 비밀 토큰 (재접속 본인 확인, 외부 미공개)
     this.maxPlayers = 10;
     this.settings = {
       writeTime:     30,

@@ -38,11 +38,27 @@ function setRoomCode(code) {
 // ─── Bootstrap ───────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   initInAppGuard(); // 카톡 등 인앱 브라우저면 외부 브라우저 안내
+  initAppHeight();  // 모바일 실제 화면 높이 자동 인식
   bindUI();
   bindAdminUI();
   setupNavGuard();
   init();
 });
+
+// ─── 화면 크기 자동 인식 ─────────────────────────────────────────────────────────
+// 모바일 브라우저의 주소창 때문에 100vh가 실제 보이는 높이와 달라 레이아웃이 잘린다.
+// 실제 보이는 높이를 측정해 --app-height 로 노출하고, 변할 때마다 갱신한다.
+function initAppHeight() {
+  const set = () => {
+    const vv = window.visualViewport;
+    const h = Math.round(vv ? vv.height : window.innerHeight);
+    document.documentElement.style.setProperty('--app-height', h + 'px');
+  };
+  set();
+  window.addEventListener('resize', set);
+  window.addEventListener('orientationchange', () => setTimeout(set, 250));
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', set);
+}
 
 function init() {
   document.querySelectorAll('.room-code-badge').forEach(el => {
@@ -73,10 +89,11 @@ function init() {
     return;
   }
 
-  const savedId   = sessionStorage.getItem('playerId');
-  const savedRoom = sessionStorage.getItem('roomCode');
+  const savedId    = sessionStorage.getItem('playerId');
+  const savedRoom  = sessionStorage.getItem('roomCode');
+  const savedToken = sessionStorage.getItem('playerToken');
   if (savedId && savedRoom === roomCode) {
-    socket.emit('reconnect_attempt', { playerId: savedId, roomCode });
+    socket.emit('reconnect_attempt', { playerId: savedId, roomCode, token: savedToken });
     return;
   }
 
@@ -226,10 +243,11 @@ socket.on('player_renamed', ({ playerId, oldNickname, nickname, players: list })
 let _firstConnect = true;
 socket.on('connect', () => {
   if (_firstConnect) { _firstConnect = false; return; } // 최초 연결은 init()이 처리
-  const savedId   = sessionStorage.getItem('playerId');
-  const savedRoom = sessionStorage.getItem('roomCode');
+  const savedId    = sessionStorage.getItem('playerId');
+  const savedRoom  = sessionStorage.getItem('roomCode');
+  const savedToken = sessionStorage.getItem('playerToken');
   if (savedId && savedRoom) {
-    socket.emit('reconnect_attempt', { playerId: savedId, roomCode: savedRoom });
+    socket.emit('reconnect_attempt', { playerId: savedId, roomCode: savedRoom, token: savedToken });
   }
 });
 
@@ -285,17 +303,19 @@ function updateHostUI() {
 }
 
 // ─── Socket: room events ──────────────────────────────────────────────────────
-socket.on('room_created', ({ roomCode: code, playerId, players: list, hostId: hid }) => {
+socket.on('room_created', ({ roomCode: code, playerId, token, players: list, hostId: hid }) => {
   myPlayerId = playerId; hostId = hid; inRoom = true;
   sessionStorage.setItem('playerId', playerId);
+  if (token) sessionStorage.setItem('playerToken', token);
   setRoomCode(code);
   renderPlayers(list);
   showScreen('lobby');
 });
 
-socket.on('join_ok', ({ roomCode: code, playerId, players: list, hostId: hid }) => {
+socket.on('join_ok', ({ roomCode: code, playerId, token, players: list, hostId: hid }) => {
   myPlayerId = playerId; hostId = hid; inRoom = true;
   sessionStorage.setItem('playerId', playerId);
+  if (token) sessionStorage.setItem('playerToken', token);
   setRoomCode(code || roomCode); // 서버가 알려준 코드를 우선 사용
   renderPlayers(list);
   showScreen('lobby');
@@ -347,10 +367,11 @@ socket.on('ready_update', ({ playerId, ready }) => {
 
 socket.on('start_error', ({ message }) => { showToast(message, 'error'); sounds.error(); });
 
-socket.on('reconnect_ok', ({ roomCode: code, phase, players: list, hostId: hid, myPlayerId: pid,
+socket.on('reconnect_ok', ({ roomCode: code, token, phase, players: list, hostId: hid, myPlayerId: pid,
                              assignment, secondsLeft, chains, paused }) => {
   myPlayerId = pid; hostId = hid; players = list; inRoom = true;
   sessionStorage.setItem('playerId', pid);
+  if (token) sessionStorage.setItem('playerToken', token);
   setRoomCode(code || roomCode);
 
   if (phase === 'LOBBY') {
@@ -598,9 +619,10 @@ function revealNextEntry() {
     body  = `<div class="reveal-word-content">${esc(entry.content)}</div>`;
   } else if (entry.type === 'drawing') {
     label = `🎨 그림 — ${esc(entry.authorNickname)}`;
-    body  = (!entry.content || entry.content === '__blank__')
-      ? `<div class="reveal-blank">(그림 없음)</div>`
-      : `<img src="${entry.content}" class="reveal-image" alt="그림">`;
+    // 보안(XSS 방어): 반드시 data:image dataURL 인 경우에만 이미지로 렌더
+    body  = isImageData(entry.content)
+      ? `<img src="${entry.content}" class="reveal-image" alt="그림">`
+      : `<div class="reveal-blank">(그림 없음)</div>`;
   } else {
     label = `💬 유추 — ${esc(entry.authorNickname)}`;
     body  = `<div class="reveal-guess-content">${esc(entry.content)}</div>`;
@@ -944,4 +966,10 @@ function bindUI() {
 
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 보안(XSS 방어): 진짜 이미지 dataURL 인지 확인 (서버 검증과 이중 방어)
+const _IMG_RE = new RegExp('^data:image/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$');
+function isImageData(s) {
+  return typeof s === 'string' && s.length <= 3_000_000 && _IMG_RE.test(s);
 }

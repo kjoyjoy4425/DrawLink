@@ -445,7 +445,8 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
      잘리고(터치 불가), 결국 그림판이 반만 칠해지는 문제가 생긴다. */
   body {
     font-size: 14px;
-    height: 100vh; height: 100dvh;
+    /* JS가 측정한 실제 보이는 높이 우선, 미지원 시 dvh/vh 로 폴백 */
+    height: 100vh; height: 100dvh; height: var(--app-height, 100dvh);
     display: flex; flex-direction: column; overflow: hidden;
   }
   .game-header { flex-shrink: 0; }
@@ -453,8 +454,10 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
     flex: 1 1 auto; min-height: 0; height: auto;
     overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
-  /* 그림 화면은 절대 스크롤되지 않고 캔버스가 남은 공간을 모두 차지 */
-  #screen-drawing.active { overflow: hidden; }
+  /* 입력형 화면(제시어/유추)은 내용이 길면 스크롤되어 입력란/버튼에 항상 닿게 */
+  .phase-wrap { flex: 0 0 auto; min-height: 0; justify-content: flex-start; }
+  /* 그림 화면: 캔버스가 공간을 채우되, 짧은 기기에선 스크롤로 제출버튼까지 닿게 */
+  #screen-drawing.active { overflow-y: auto; }
 
   .game-header { height: 48px; padding: 0 12px; }
   .game-header .logo { font-size: 17px; }
@@ -480,10 +483,10 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
   .chat-messages { max-height: 22vh; }
   .chat-panel.collapsed { max-height: none; }
 
-  /* 그림 화면: 한 화면에 모두 들어가고 캔버스가 남은 공간을 전부 차지 */
+  /* 그림 화면: 캔버스가 남은 공간을 채우되, 짧은 기기에선 스크롤로 제출버튼까지 닿게 */
   .drawing-wrap {
     padding: 8px 10px; gap: 8px;
-    height: 100%; min-height: 0; overflow: hidden;
+    min-height: 100%; overflow: visible;
   }
   .drawing-prompt-bar { padding: 7px 12px; flex-shrink: 0; }
   .drawing-prompt-bar .dp-word { font-size: 15px; }
@@ -491,11 +494,13 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
   .toolbar { padding: 6px 8px; gap: 5px; flex-shrink: 0; }
   .tool-btn { width: 30px; height: 30px; font-size: 15px; }
   .drawing-wrap .btn { flex-shrink: 0; } /* 제출 버튼 항상 보이게 */
-  .canvas-container { flex: 1 1 auto; min-height: 0; } /* 46vh 강제 제거 */
 
   /* 입력/제시어/유추 화면 */
   .phase-wrap { padding: 16px 14px; gap: 12px; }
   .phase-title { font-size: 19px; }
+  /* 추리 그림은 화면을 다 차지하지 않게 제한 → 입력란이 항상 보이도록 */
+  #guess-image-wrap { display: flex; justify-content: center; align-items: center; max-height: 42vh; }
+  #guess-image-wrap img { max-width: 100%; max-height: 42vh; width: auto; height: auto; object-fit: contain; }
 
   /* 관리 패널: 화면을 거의 덮는 시트 */
   .admin-panel { width: 86vw; max-width: 340px; top: 48px; }
