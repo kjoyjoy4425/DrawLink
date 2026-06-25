@@ -221,8 +221,15 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
   background: var(--white); border-radius: var(--radius-sm); overflow: hidden;
   flex: 1; min-height: 280px; border: 1px solid var(--border);
   box-shadow: var(--shadow);
+  display: flex; align-items: center; justify-content: center; /* 고정 4:3 캔버스 가운데 정렬 */
 }
-.draw-canvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+/* 모든 기기에서 동일한 4:3 그림판 — 표시 영역에 맞춰 비율 유지하며 축소 (왜곡 없음) */
+.draw-canvas {
+  display: block; aspect-ratio: 4 / 3;
+  max-width: 100%; max-height: 100%; width: auto; height: auto;
+  background: #fff; cursor: crosshair; touch-action: none;
+}
+.scroll-pad { display: none; } /* 기본(PC)에서는 숨김 — 모바일에서만 표시 */
 
 /* ─── Waiting ────────────────────────────────────────────────────────────── */
 .waiting-wrap {
@@ -494,6 +501,21 @@ input[type="text"]::placeholder, textarea::placeholder { color: var(--muted); }
   .toolbar { padding: 6px 8px; gap: 5px; flex-shrink: 0; }
   .tool-btn { width: 30px; height: 30px; font-size: 15px; }
   .drawing-wrap .btn { flex-shrink: 0; } /* 제출 버튼 항상 보이게 */
+
+  /* 화면 상하 이동 바 (모바일에서만 표시) */
+  .scroll-pad {
+    display: flex; flex-direction: column; gap: 8px;
+    position: fixed; right: 6px; top: 50%; transform: translateY(-50%);
+    z-index: 60;
+  }
+  .scroll-pad-btn {
+    width: 40px; height: 48px; border-radius: 12px;
+    border: 1px solid var(--border); background: rgba(255,255,255,0.92);
+    color: var(--text); font-size: 18px; box-shadow: var(--shadow);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; -webkit-user-select: none; user-select: none; touch-action: none;
+  }
+  .scroll-pad-btn:active { background: var(--primary); color: #fff; border-color: var(--primary); }
 
   /* 입력/제시어/유추 화면 */
   .phase-wrap { padding: 16px 14px; gap: 12px; }

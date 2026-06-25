@@ -287,6 +287,12 @@
 
     <button class="btn btn-primary btn-full btn-lg" id="draw-submit" disabled>그림 제출하기 →</button>
   </div>
+
+  <!-- 모바일 전용: 화면을 위/아래로 움직이는 바 (큰 글씨·주소창으로 좁아질 때 제출버튼 접근) -->
+  <div class="scroll-pad" id="draw-scroll-pad">
+    <button type="button" class="scroll-pad-btn" id="scroll-up" aria-label="위로 이동">▲</button>
+    <button type="button" class="scroll-pad-btn" id="scroll-down" aria-label="아래로 이동">▼</button>
+  </div>
 </section>
 
 <!-- ══════════════════════════════════════════════════════════════════════

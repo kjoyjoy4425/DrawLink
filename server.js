@@ -61,17 +61,42 @@ function tooFast(socket, key, ms) {
   return false;
 }
 
+// 제시어 예시 — 작성 미제출 시 채움 + 클라 placeholder 와 동일 컨셉
+const EXAMPLE_WORDS = [
+  '우주에서 라면 먹는 고양이', '선글라스 쓴 공룡', '피아노 치는 문어', '하늘을 나는 햄버거',
+  '요가하는 펭귄', '축구하는 로봇', '커피 마시는 판다', '왕관 쓴 개구리',
+  '스케이트보드 타는 강아지', '우산 든 곰', '낚시하는 고양이', '춤추는 브로콜리',
+  '기타 치는 햄스터', '비눗방울 부는 코끼리', '아이스크림 든 펭귄', '책 읽는 부엉이'
+];
+function randomExample() { return EXAMPLE_WORDS[Math.floor(Math.random() * EXAMPLE_WORDS.length)]; }
+
+// 체인에서 가장 최근의 "텍스트(제시어/유추)" 엔트리 내용 — 유추 미입력 시 ??? 대신 사용
+function lastTextInChain(chain) {
+  if (!chain || !chain.entries) return null;
+  for (let i = chain.entries.length - 1; i >= 0; i--) {
+    if (chain.entries[i].type !== 'drawing') return chain.entries[i].content;
+  }
+  return null;
+}
+
+// 미제출 시 단계별 대체 내용 (???/빈칸 대신 자연스러운 흐름 유지)
+function fallbackFor(room, playerId) {
+  if (room.phase === 'DRAWING') return '__blank__';
+  if (room.phase === 'GUESSING') {
+    const a = room.currentAssignments.get(playerId);
+    const chain = a ? room.chains[a.chainIndex] : null;
+    return lastTextInChain(chain) || randomExample();
+  }
+  return randomExample(); // WRITING
+}
+
 function fillMissing(room) {
   for (const player of room.players.values()) {
-    if (!room.submissions.has(player.id)) {
-      // 드래프트(임시 저장)가 있으면 그것을 사용 — 만료 레이스로 인한 ???/빈그림 방지
-      const draft = room.drafts.get(player.id);
-      if (draft !== undefined && draft !== null && draft !== '') {
-        room.submissions.set(player.id, draft);
-      } else {
-        room.submissions.set(player.id, room.phase === 'DRAWING' ? '__blank__' : '???');
-      }
-    }
+    if (room.submissions.has(player.id)) continue;
+    // 드래프트(임시 저장)가 있으면 우선 사용 — 만료 레이스로 인한 유실 방지
+    const draft = room.drafts.get(player.id);
+    room.submissions.set(player.id,
+      (draft !== undefined && draft !== null && draft !== '') ? draft : fallbackFor(room, player.id));
   }
 }
 
@@ -205,7 +230,50 @@ function startReveal(room) {
   if (room.timer)         { clearInterval(room.timer); room.timer = null; }
   if (room.advanceTimeout){ clearTimeout(room.advanceTimeout); room.advanceTimeout = null; }
   room.phase = 'REVEAL';
+  room.revealChainIdx = 0;  // 결과 공개 위치(방장이 넘기는 위치) — 모두 동기화 + 재접속 복원
+  room.revealShown    = 1;
   io.to(room.code).emit('phase_reveal', { chains: room.chains });
+}
+
+// 끊긴 플레이어를 새 소켓으로 이어붙임 (토큰 재접속 / 닉네임 재접속 공통)
+function resumePlayer(room, socket, player) {
+  const oldId = player.id;
+  if (room.reconnectTimers.has(oldId)) {
+    clearTimeout(room.reconnectTimers.get(oldId));
+    room.reconnectTimers.delete(oldId);
+  }
+  room.players.delete(oldId);
+  roomManager.unregisterSocket(oldId);
+  player.id = socket.id;
+  player.connected = true;
+  room.players.set(socket.id, player);
+  roomManager.registerSocket(socket.id, room.code);
+
+  // 토큰 회전 (새 소켓에 새 비밀 토큰 발급)
+  const token = genToken();
+  room.tokens.delete(oldId);
+  room.tokens.set(socket.id, token);
+  if (room.hostId === oldId) room.hostId = socket.id;
+
+  // 진행 상태(제출/배정/드래프트)를 새 소켓 id 로 이전
+  for (const map of [room.submissions, room.currentAssignments, room.drafts]) {
+    if (map.has(oldId)) { map.set(socket.id, map.get(oldId)); map.delete(oldId); }
+  }
+
+  socket.join(room.code);
+  socket.emit('reconnect_ok', {
+    roomCode: room.code, token,
+    phase: room.phase, players: room.getPlayerArray(),
+    hostId: room.hostId, myPlayerId: socket.id,
+    assignment: room.currentAssignments.get(socket.id) || null,
+    secondsLeft: room.secondsLeft,
+    chains: room.phase === 'REVEAL' ? room.chains : null,
+    revealChainIdx: room.revealChainIdx || 0,
+    revealShown: room.revealShown || 1,
+    paused: room.paused
+  });
+  socket.to(room.code).emit('player_rejoined', { playerId: socket.id, nickname: player.nickname });
+  if (['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) broadcastCount(room);
 }
 
 // ─── Socket Events ────────────────────────────────────────────────────────────
@@ -236,7 +304,12 @@ io.on('connection', (socket) => {
 
     const room = roomManager.getRoom(code);
     if (!room)                  return socket.emit('join_error', { message: '존재하지 않는 방입니다.' });
-    if (room.phase !== 'LOBBY') return socket.emit('join_error', { message: '이미 게임이 시작되었습니다.' });
+    if (room.phase !== 'LOBBY') {
+      // 게임 중이라도 "끊긴 같은 닉네임"이 있으면 이어가기 허용 (1분 내 재접속)
+      const ghost = [...room.players.values()].find(p => !p.connected && p.nickname === nick);
+      if (ghost) { resumePlayer(room, socket, ghost); return; }
+      return socket.emit('join_error', { message: '이미 게임이 시작되었습니다.' });
+    }
     if (room.locked)            return socket.emit('join_error', { message: '방장이 입장을 잠갔습니다.' });
     if (room.players.size >= room.maxPlayers) return socket.emit('join_error', { message: `방이 가득 찼습니다. (최대 ${room.maxPlayers}명)` });
 
@@ -373,10 +446,28 @@ io.on('connection', (socket) => {
 
   // ── Reveal ───────────────────────────────────────────────────────────────────
 
-  socket.on('reveal_action', ({ type }) => {
+  socket.on('reveal_action', ({ type, chainIdx }) => {
     const room = roomManager.getRoomBySocket(socket.id);
     if (!room || room.hostId !== socket.id || room.phase !== 'REVEAL') return;
-    io.to(room.code).emit('reveal_action', { type });
+
+    // 서버가 공개 위치를 단일 출처로 관리 → 방장/참가자/재접속자 모두 동일 화면
+    if (type === 'next_entry') {
+      const chain = room.chains[room.revealChainIdx];
+      const max = chain ? chain.entries.length : 1;
+      room.revealShown = Math.min((room.revealShown || 1) + 1, max);
+    } else if (type === 'next_chain') {
+      room.revealChainIdx = Math.min((room.revealChainIdx || 0) + 1, room.chains.length - 1);
+      room.revealShown = 1;
+    } else if (type === 'goto_chain') {
+      const i = parseInt(chainIdx);
+      if (Number.isInteger(i) && i >= 0 && i < room.chains.length) {
+        room.revealChainIdx = i; room.revealShown = 1;
+      } else return;
+    } else return;
+
+    io.to(room.code).emit('reveal_action', {
+      type, chainIdx: room.revealChainIdx, shown: room.revealShown
+    });
   });
 
   socket.on('play_again', () => {
@@ -554,7 +645,7 @@ io.on('connection', (socket) => {
     if (room.submissions.has(playerId)) return;
     const draft = room.drafts.get(playerId);
     room.submissions.set(playerId, (draft && draft !== '')
-      ? draft : (room.phase === 'DRAWING' ? '__blank__' : '???'));
+      ? draft : fallbackFor(room, playerId));
     broadcastCount(room);
     checkAdvance(room);
   });
@@ -602,44 +693,7 @@ io.on('connection', (socket) => {
       return socket.emit('reconnect_fail', { message: '재접속 인증에 실패했습니다.' });
     }
 
-    if (room.reconnectTimers.has(playerId)) {
-      clearTimeout(room.reconnectTimers.get(playerId));
-      room.reconnectTimers.delete(playerId);
-    }
-
-    room.players.delete(playerId);
-    roomManager.unregisterSocket(playerId);
-    player.id = socket.id;
-    player.connected = true;
-    room.players.set(socket.id, player);
-    roomManager.registerSocket(socket.id, room.code);
-    // 토큰을 새 socket id로 이전
-    room.tokens.delete(playerId);
-    room.tokens.set(socket.id, expected);
-    if (room.hostId === playerId) room.hostId = socket.id;
-
-    if (room.submissions.has(playerId)) {
-      const sub = room.submissions.get(playerId);
-      room.submissions.delete(playerId);
-      room.submissions.set(socket.id, sub);
-    }
-    if (room.currentAssignments.has(playerId)) {
-      const a = room.currentAssignments.get(playerId);
-      room.currentAssignments.delete(playerId);
-      room.currentAssignments.set(socket.id, a);
-    }
-
-    socket.join(room.code);
-    socket.emit('reconnect_ok', {
-      roomCode: room.code, token: expected,
-      phase: room.phase, players: room.getPlayerArray(),
-      hostId: room.hostId, myPlayerId: socket.id,
-      assignment: room.currentAssignments.get(socket.id) || null,
-      secondsLeft: room.secondsLeft,
-      chains: room.phase === 'REVEAL' ? room.chains : null,
-      paused: room.paused
-    });
-    socket.to(room.code).emit('player_rejoined', { playerId: socket.id, nickname: player.nickname });
+    resumePlayer(room, socket, player);
   });
 
   // ── Disconnect ───────────────────────────────────────────────────────────────
@@ -685,14 +739,15 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // 1분간 재접속(토큰 또는 같은 닉네임)을 기다린 뒤에야 대체 제출로 채움
     const handle = setTimeout(() => {
       room.reconnectTimers.delete(socket.id);
       if (!room.submissions.has(socket.id) && ['WRITING', 'DRAWING', 'GUESSING'].includes(room.phase)) {
-        room.submissions.set(socket.id, room.phase === 'DRAWING' ? '__blank__' : '???');
+        room.submissions.set(socket.id, fallbackFor(room, socket.id));
         broadcastCount(room);
         checkAdvance(room);
       }
-    }, 30_000);
+    }, 60_000);
     room.reconnectTimers.set(socket.id, handle);
     checkAdvance(room);
   });

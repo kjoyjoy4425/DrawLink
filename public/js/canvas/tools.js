@@ -102,21 +102,8 @@ export class DrawingTool {
   }
 
   resize() {
-    const rect = this.canvas.getBoundingClientRect();
-    const dpr  = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.max(1, Math.round(rect.width  * dpr));
-    const h = Math.max(1, Math.round(rect.height * dpr));
-    if (w === this.canvas.width && h === this.canvas.height) return;
-    const data = this.canvas.toDataURL('image/png');
-    const img  = new Image();
-    img.onload = () => {
-      this.canvas.width = w; this.canvas.height = h;
-      this.ctx.globalCompositeOperation = 'source-over';
-      this.ctx.fillStyle = '#ffffff';
-      this.ctx.fillRect(0, 0, w, h);
-      this.ctx.drawImage(img, 0, 0, w, h);
-    };
-    img.src = data;
+    // 비트맵은 고정 논리 해상도(CANVAS_W×CANVAS_H)라 화면 회전/리사이즈 시
+    // 다시 만들 필요가 없다. CSS 가 표시 크기만 조절하므로 그림은 그대로 유지된다.
   }
 
   _start(e) {

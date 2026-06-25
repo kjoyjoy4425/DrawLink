@@ -39,11 +39,35 @@ function setRoomCode(code) {
 document.addEventListener('DOMContentLoaded', () => {
   initInAppGuard(); // 카톡 등 인앱 브라우저면 외부 브라우저 안내
   initAppHeight();  // 모바일 실제 화면 높이 자동 인식
+  bindScrollPad();  // 그림 화면 상하 이동 바
   bindUI();
   bindAdminUI();
   setupNavGuard();
   init();
 });
+
+// ─── 그림 화면 상하 이동 바 (모바일) ──────────────────────────────────────────────
+// 큰 글씨/주소창으로 화면이 좁아져 제출버튼에 닿기 어려울 때 화면을 위·아래로 움직인다.
+function bindScrollPad() {
+  const screen = document.getElementById('screen-drawing');
+  const up   = document.getElementById('scroll-up');
+  const down = document.getElementById('scroll-down');
+  if (!screen || !up || !down) return;
+  let iv = null;
+  const stop = () => { if (iv) { clearInterval(iv); iv = null; } };
+  const startScroll = dir => {
+    stop();
+    const step = () => screen.scrollBy({ top: dir * 50, left: 0 });
+    step();                       // 짧게 탭해도 한 번 이동
+    iv = setInterval(step, 60);   // 누르고 있으면 계속 이동
+  };
+  [[up, -1], [down, 1]].forEach(([btn, dir]) => {
+    btn.addEventListener('pointerdown',  e => { e.preventDefault(); startScroll(dir); });
+    btn.addEventListener('pointerup',    stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+  });
+}
 
 // ─── 화면 크기 자동 인식 ─────────────────────────────────────────────────────────
 // 모바일 브라우저의 주소창 때문에 100vh가 실제 보이는 높이와 달라 레이아웃이 잘린다.
@@ -113,6 +137,24 @@ function scheduleDraft(getContent, delay = 1000) {
     } catch (_) {}
   }, delay);
 }
+
+// ─── 제시어 예시 (회전 placeholder + 미입력 대체) ──────────────────────────────
+const WRITE_EXAMPLES = [
+  '우주에서 라면 먹는 고양이', '선글라스 쓴 공룡', '피아노 치는 문어', '하늘을 나는 햄버거',
+  '요가하는 펭귄', '축구하는 로봇', '커피 마시는 판다', '왕관 쓴 개구리',
+  '스케이트보드 타는 강아지', '우산 든 곰', '낚시하는 고양이', '춤추는 브로콜리',
+  '기타 치는 햄스터', '비눗방울 부는 코끼리', '아이스크림 든 펭귄', '책 읽는 부엉이'
+];
+function randomWriteExample() { return WRITE_EXAMPLES[Math.floor(Math.random() * WRITE_EXAMPLES.length)]; }
+
+let _phRot = null;
+function rotatePlaceholder(input) {
+  stopPlaceholder();
+  const pick = () => { if (input) input.placeholder = '예: ' + randomWriteExample(); };
+  pick();
+  _phRot = setInterval(pick, 2500); // 2.5초마다 다른 예시
+}
+function stopPlaceholder() { if (_phRot) { clearInterval(_phRot); _phRot = null; } }
 
 // ─── Timer ───────────────────────────────────────────────────────────────────
 function initTimer(seconds, fillId, labelId, onExpire) {
@@ -368,11 +410,12 @@ socket.on('ready_update', ({ playerId, ready }) => {
 socket.on('start_error', ({ message }) => { showToast(message, 'error'); sounds.error(); });
 
 socket.on('reconnect_ok', ({ roomCode: code, token, phase, players: list, hostId: hid, myPlayerId: pid,
-                             assignment, secondsLeft, chains, paused }) => {
+                             assignment, secondsLeft, chains, revealChainIdx: rci, revealShown: rsh, paused }) => {
   myPlayerId = pid; hostId = hid; players = list; inRoom = true;
   sessionStorage.setItem('playerId', pid);
   if (token) sessionStorage.setItem('playerToken', token);
   setRoomCode(code || roomCode);
+  showToast('다시 연결되었어요. 이어서 진행할게요!', 'success');
 
   if (phase === 'LOBBY') {
     renderPlayers(list); showScreen('lobby');
@@ -388,7 +431,7 @@ socket.on('reconnect_ok', ({ roomCode: code, token, phase, players: list, hostId
     else showWaitingScreen();
     if (paused) showPauseBanner(true);
   } else if (phase === 'REVEAL') {
-    startReveal(chains);
+    startReveal(chains, rci || 0, rsh || 1);
   }
   updateHostUI();
 });
@@ -434,14 +477,13 @@ function showWritingScreen(timeLimit) {
   showPauseBanner(false);
   showAdminSection('game');
   showScreen('writing');
+  rotatePlaceholder(input); // 다양한 예시를 번갈아 보여줌
 
   initTimer(timeLimit, 'writing-timer-fill', 'writing-timer-label', () => {
-    // ★ 타이머 만료 시 현재 내용 자동 제출
-    const text = input.value.trim();
-    if (!btn.disabled || text) {  // 아직 제출 안 했으면
-      lastSubmission = { type: 'word', content: text || '???' };
-      socket.emit('submit_word', { text: text || '???' });
-    }
+    // ★ 타이머 만료 시 자동 제출 — 비어 있으면 ??? 대신 재미있는 예시 단어
+    const text = input.value.trim() || randomWriteExample();
+    lastSubmission = { type: 'word', content: text };
+    socket.emit('submit_word', { text });
     btn.disabled = true;
     showWaitingScreen();
   });
@@ -515,10 +557,13 @@ function showGuessingScreen(imageData, timeLimit) {
   showScreen('guessing');
 
   initTimer(timeLimit, 'guessing-timer-fill', 'guessing-timer-label', () => {
-    // ★ 타이머 만료 시 현재 내용 자동 제출
+    // ★ 타이머 만료 시 입력값이 있으면 제출, 비어 있으면 제출하지 않음
+    //    → 서버가 ??? 대신 "가장 최근 제시어"로 채워준다
     const text = input.value.trim();
-    lastSubmission = { type: 'guess', content: text || '???' };
-    socket.emit('submit_guess', { text: text || '???' });
+    if (text) {
+      lastSubmission = { type: 'guess', content: text };
+      socket.emit('submit_guess', { text });
+    }
     btn.disabled = true;
     showWaitingScreen();
   });
@@ -526,6 +571,7 @@ function showGuessingScreen(imageData, timeLimit) {
 
 function showWaitingScreen() {
   currentPhase = 'WAITING';
+  stopPlaceholder();
   document.getElementById('submitted-count').innerHTML = '';
   showScreen('waiting');
 }
@@ -557,23 +603,21 @@ function sendChat(inputId) {
 }
 
 // ─── Reveal ───────────────────────────────────────────────────────────────────
-function startReveal(chains) {
-  revealChains   = chains;
-  revealChainIdx = 0;
-  revealEntryIdx = 0;
+function startReveal(chains, chainIdx = 0, shown = 1) {
+  revealChains = chains || [];
   showAdminSection('reveal');
   showScreen('reveal');
-  renderRevealChain(0);
+  renderRevealChain(chainIdx, shown);
 }
 
-socket.on('reveal_action', ({ type }) => {
-  if (type === 'next_entry')       { sounds.nextEntry(); revealNextEntry(); }
-  else if (type === 'next_chain')  { sounds.phase(); renderRevealChain(revealChainIdx + 1); }
-  else if (type === 'play_again')  { socket.emit('play_again'); }
+// 서버가 위치를 단일 출처로 관리 → 방장이 누른 결과가 모두에게 동일하게 적용 (이중 적용 버그 제거)
+socket.on('reveal_action', ({ type, chainIdx, shown }) => {
+  if (type === 'next_entry')                               { sounds.nextEntry(); revealNextEntry(); }
+  else if (type === 'next_chain' || type === 'goto_chain') { sounds.phase();     renderRevealChain(chainIdx, 1); }
 });
 
-function renderRevealChain(idx) {
-  if (idx >= revealChains.length) return;
+function renderRevealChain(idx, shown = 1) {
+  if (idx == null || idx < 0 || idx >= revealChains.length) return;
   revealChainIdx = idx;
   revealEntryIdx = 0;
   const chain = revealChains[idx];
@@ -592,25 +636,29 @@ function renderRevealChain(idx) {
   if (myPlayerId === hostId) {
     dots.querySelectorAll('.chain-dot').forEach(d =>
       d.addEventListener('click', () => {
-        const i = parseInt(d.dataset.i);
-        socket.emit('reveal_action', { type: 'next_chain' });
-        renderRevealChain(i);
+        // 방장은 emit만 — 실제 이동은 서버 브로드캐스트로 모두 함께 처리
+        socket.emit('reveal_action', { type: 'goto_chain', chainIdx: parseInt(d.dataset.i) });
       })
     );
   }
 
+  // shown 개수만큼 즉시 표시 (재접속 시 현재 위치까지 따라잡기)
+  const n = Math.min(Math.max(1, shown), chain.entries.length);
+  for (let k = 0; k < n; k++) appendRevealEntry(chain.entries[revealEntryIdx++], false);
   updateRevealButtons();
-  revealNextEntry();
 }
 
 function revealNextEntry() {
   const chain = revealChains[revealChainIdx];
   if (!chain || revealEntryIdx >= chain.entries.length) return;
+  appendRevealEntry(chain.entries[revealEntryIdx++], true);
+  updateRevealButtons();
+}
 
-  const entry = chain.entries[revealEntryIdx++];
-  const wrap  = document.getElementById('reveal-entries');
-
-  const div   = document.createElement('div');
+function appendRevealEntry(entry, animate) {
+  if (!entry) return;
+  const wrap = document.getElementById('reveal-entries');
+  const div  = document.createElement('div');
   div.className = `reveal-entry type-${entry.type}`;
 
   let label = '', body = '';
@@ -630,9 +678,9 @@ function revealNextEntry() {
 
   div.innerHTML = `<div class="reveal-entry-label">${label}</div>${body}`;
   wrap.appendChild(div);
-  requestAnimationFrame(() => div.classList.add('visible'));
+  if (animate) requestAnimationFrame(() => div.classList.add('visible'));
+  else div.classList.add('visible');
   wrap.scrollTop = wrap.scrollHeight;
-  updateRevealButtons();
 }
 
 function updateRevealButtons() {
@@ -824,14 +872,12 @@ function bindAdminUI() {
     btn.addEventListener('click', () => socket.emit('admin_announce', { text: btn.dataset.msg }));
   });
 
-  // 결과 제어 (관리 패널)
+  // 결과 제어 (관리 패널) — emit만, 화면 갱신은 서버 브로드캐스트로 모두 함께
   document.getElementById('admin-reveal-next-entry')?.addEventListener('click', () => {
     socket.emit('reveal_action', { type: 'next_entry' });
-    sounds.nextEntry(); revealNextEntry();
   });
   document.getElementById('admin-reveal-next-chain')?.addEventListener('click', () => {
     socket.emit('reveal_action', { type: 'next_chain' });
-    sounds.phase(); renderRevealChain(revealChainIdx + 1);
   });
 }
 
@@ -936,15 +982,15 @@ function bindUI() {
   // 편집하기
   document.getElementById('edit-btn')?.addEventListener('click', () => socket.emit('request_edit'));
 
-  // 결과 네비게이션 (방장)
+  // 결과 네비게이션 (방장) — emit만, 화면 갱신은 서버 브로드캐스트로 모두 함께
   document.getElementById('next-entry-btn')?.addEventListener('click', () => {
-    socket.emit('reveal_action', { type: 'next_entry' }); sounds.nextEntry(); revealNextEntry();
+    socket.emit('reveal_action', { type: 'next_entry' });
   });
   document.getElementById('next-chain-btn')?.addEventListener('click', () => {
-    socket.emit('reveal_action', { type: 'next_chain' }); sounds.phase(); renderRevealChain(revealChainIdx + 1);
+    socket.emit('reveal_action', { type: 'next_chain' });
   });
   document.getElementById('play-again-btn')?.addEventListener('click', () => {
-    socket.emit('reveal_action', { type: 'play_again' });
+    socket.emit('play_again');
   });
 
   // 채팅 접기/펼치기 (특히 모바일에서 그림을 가리지 않도록)
